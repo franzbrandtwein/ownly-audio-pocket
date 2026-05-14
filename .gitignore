@@ -1,0 +1,5 @@
+music/
+*.pem
+nohup.out
+__pycache__/
+*.pyc
