@@ -976,15 +976,20 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
-admin_httpd = http.server.HTTPServer(('0.0.0.0', ADMIN_PORT), AdminHandler)
-t = threading.Thread(target=admin_httpd.serve_forever, daemon=True)
-t.start()
-print(f"Admin: http://0.0.0.0:{ADMIN_PORT}")
+def start_server():
+    """Start both servers. Blocks until the main HTTPS server is stopped."""
+    admin_httpd = http.server.HTTPServer(('0.0.0.0', ADMIN_PORT), AdminHandler)
+    t = threading.Thread(target=admin_httpd.serve_forever, daemon=True)
+    t.start()
 
-cert_file, key_file = ensure_cert()
-httpd = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
-ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain(str(cert_file), str(key_file))
-httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-print(f"https://0.0.0.0:{PORT}")
-httpd.serve_forever()
+    cert_file, key_file = ensure_cert()
+    httpd = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert_file), str(key_file))
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.serve_forever()
+
+if __name__ == '__main__':
+    print(f"Admin: http://0.0.0.0:{ADMIN_PORT}")
+    print(f"https://0.0.0.0:{PORT}")
+    start_server()

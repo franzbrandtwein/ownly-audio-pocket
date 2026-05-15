@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ownly Audio Pocket – GUI Launcher"""
 
-import sys, subprocess, webbrowser, threading, time, socket, platform, io
+import sys, webbrowser, threading, time, socket, platform, io
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -10,10 +10,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QPixmap, QImage
 
-SERVER_SCRIPT = Path(__file__).resolve().parent / "server.py"
-PORT       = 8765
-ADMIN_PORT = 8766
-IS_WINDOWS = platform.system() == "Windows"
+import server as _server
+
+PORT       = _server.PORT
+ADMIN_PORT = _server.ADMIN_PORT
 
 def get_local_ip():
     try:
@@ -46,7 +46,7 @@ class Signals(QObject):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.proc    = None
+        self._server_thread = None
         self.signals = Signals()
         self.ip      = get_local_ip()
         self.url     = f"https://{self.ip}:{PORT}"
@@ -234,19 +234,9 @@ class MainWindow(QWidget):
     def _start_server(self):
         def run():
             try:
-                kwargs = {}
-                if IS_WINDOWS:
-                    # Hide console window on Windows
-                    si = subprocess.STARTUPINFO()
-                    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    kwargs["startupinfo"] = si
-                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-                self.proc = subprocess.Popen(
-                    [sys.executable, str(SERVER_SCRIPT)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    **kwargs,
-                )
+                self._server_thread = threading.Thread(
+                    target=_server.start_server, daemon=True)
+                self._server_thread.start()
             except Exception as e:
                 self.signals.failed.emit(str(e))
                 return
@@ -258,12 +248,7 @@ class MainWindow(QWidget):
         threading.Thread(target=run, daemon=True).start()
 
     def _stop_server(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        # Server thread is daemon — exits with the process
         self.signals.stopped.emit()
 
     def closeEvent(self, event):
