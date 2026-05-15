@@ -63,7 +63,7 @@ class MainWindow(QWidget):
 
     def _build_ui(self):
         self.setWindowTitle("Ownly Audio Pocket")
-        self.setFixedSize(620, 310)
+        self.setFixedSize(780, 360)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -71,16 +71,15 @@ class MainWindow(QWidget):
 
         # ── Left panel ───────────────────────────────────────────────────────
         left = QWidget()
-        left.setFixedWidth(310)
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(28, 28, 28, 28)
+        ll.setContentsMargins(32, 28, 32, 24)
         ll.setSpacing(0)
 
         title = QLabel("🎵 Ownly Audio Pocket")
-        title.setFont(QFont("System", 16, QFont.Bold))
+        title.setFont(QFont("System", 17, QFont.Bold))
         title.setStyleSheet("color:#ee6633;")
         ll.addWidget(title)
-        ll.addSpacing(6)
+        ll.addSpacing(8)
 
         self.status_dot = QLabel("●")
         self.status_dot.setStyleSheet("color:#888;font-size:14px;")
@@ -89,21 +88,21 @@ class MainWindow(QWidget):
         sr = QHBoxLayout(); sr.setSpacing(6)
         sr.addWidget(self.status_dot); sr.addWidget(self.status_lbl); sr.addStretch()
         ll.addLayout(sr)
-        ll.addSpacing(20)
+        ll.addSpacing(18)
 
         card = QFrame()
         card.setStyleSheet("background:#1e1e1e;border-radius:10px;")
-        cl = QVBoxLayout(card); cl.setContentsMargins(18,14,18,14); cl.setSpacing(10)
+        cl = QVBoxLayout(card); cl.setContentsMargins(18, 14, 18, 14); cl.setSpacing(8)
 
         # Player
         lp = QLabel("Player"); lp.setStyleSheet("color:#888;font-size:11px;")
         self.url_lbl = QLabel(self.url)
-        self.url_lbl.setStyleSheet("color:#eee;font-size:14px;font-weight:bold;")
+        self.url_lbl.setStyleSheet("color:#eee;font-size:13px;font-weight:bold;")
         self.url_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         br = QHBoxLayout(); br.setSpacing(8)
         self.btn_copy    = self._btn("Kopieren",          self._copy_url,    "#333")
         self.btn_browser = self._btn("Im Browser öffnen", self._open_browser, "#ee6633")
-        br.addWidget(self.btn_copy); br.addWidget(self.btn_browser); br.addStretch()
+        br.addWidget(self.btn_copy, 1); br.addWidget(self.btn_browser, 2)
         cl.addWidget(lp); cl.addWidget(self.url_lbl); cl.addLayout(br)
 
         div = QFrame(); div.setFrameShape(QFrame.HLine)
@@ -117,7 +116,7 @@ class MainWindow(QWidget):
         ar = QHBoxLayout(); ar.setSpacing(8)
         self.btn_copy_admin    = self._btn("Kopieren",          self._copy_admin,        "#333")
         self.btn_browser_admin = self._btn("Im Browser öffnen", self._open_browser_admin, "#333")
-        ar.addWidget(self.btn_copy_admin); ar.addWidget(self.btn_browser_admin); ar.addStretch()
+        ar.addWidget(self.btn_copy_admin, 1); ar.addWidget(self.btn_browser_admin, 2)
         cl.addWidget(la); cl.addWidget(self.admin_lbl); cl.addLayout(ar)
 
         ll.addWidget(card)
@@ -129,14 +128,14 @@ class MainWindow(QWidget):
         bot.addWidget(self.btn_stop)
         ll.addLayout(bot)
 
-        root.addWidget(left)
+        root.addWidget(left, 1)
 
         # ── Right panel: QR code ─────────────────────────────────────────────
         right = QWidget()
-        right.setFixedWidth(310)
+        right.setFixedWidth(290)
         right.setStyleSheet("background:#1a1a1a;")
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setContentsMargins(0, 0, 0, 12)
         rl.setAlignment(Qt.AlignCenter)
 
         self.qr_label = QLabel()
