@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Ownly Audio Pocket – GUI Launcher"""
 
-import sys, subprocess, webbrowser, threading, time, socket, platform
+import sys, subprocess, webbrowser, threading, time, socket, platform, io
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QPixmap, QImage
 
 SERVER_SCRIPT = Path(__file__).resolve().parent / "server.py"
 PORT       = 8765
@@ -63,17 +63,24 @@ class MainWindow(QWidget):
 
     def _build_ui(self):
         self.setWindowTitle("Ownly Audio Pocket")
-        self.setFixedSize(480, 310)
+        self.setFixedSize(620, 310)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 28, 28, 28)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        # ── Left panel ───────────────────────────────────────────────────────
+        left = QWidget()
+        left.setFixedWidth(310)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(28, 28, 28, 28)
+        ll.setSpacing(0)
 
         title = QLabel("🎵 Ownly Audio Pocket")
         title.setFont(QFont("System", 16, QFont.Bold))
         title.setStyleSheet("color:#ee6633;")
-        root.addWidget(title)
-        root.addSpacing(6)
+        ll.addWidget(title)
+        ll.addSpacing(6)
 
         self.status_dot = QLabel("●")
         self.status_dot.setStyleSheet("color:#888;font-size:14px;")
@@ -81,8 +88,8 @@ class MainWindow(QWidget):
         self.status_lbl.setStyleSheet("color:#999;font-size:13px;")
         sr = QHBoxLayout(); sr.setSpacing(6)
         sr.addWidget(self.status_dot); sr.addWidget(self.status_lbl); sr.addStretch()
-        root.addLayout(sr)
-        root.addSpacing(20)
+        ll.addLayout(sr)
+        ll.addSpacing(20)
 
         card = QFrame()
         card.setStyleSheet("background:#1e1e1e;border-radius:10px;")
@@ -113,14 +120,37 @@ class MainWindow(QWidget):
         ar.addWidget(self.btn_copy_admin); ar.addWidget(self.btn_browser_admin); ar.addStretch()
         cl.addWidget(la); cl.addWidget(self.admin_lbl); cl.addLayout(ar)
 
-        root.addWidget(card)
-        root.addStretch()
+        ll.addWidget(card)
+        ll.addStretch()
 
         bot = QHBoxLayout(); bot.addStretch()
         self.btn_stop = self._btn("Server beenden", self._stop_server, "#550000")
         self.btn_stop.setEnabled(False)
         bot.addWidget(self.btn_stop)
-        root.addLayout(bot)
+        ll.addLayout(bot)
+
+        root.addWidget(left)
+
+        # ── Right panel: QR code ─────────────────────────────────────────────
+        right = QWidget()
+        right.setFixedWidth(310)
+        right.setStyleSheet("background:#1a1a1a;")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setAlignment(Qt.AlignCenter)
+
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignCenter)
+        self.qr_label.setText("⏳")
+        self.qr_label.setStyleSheet("color:#555;font-size:32px;")
+
+        self.qr_hint = QLabel("Mit Handy scannen")
+        self.qr_hint.setAlignment(Qt.AlignCenter)
+        self.qr_hint.setStyleSheet("color:#666;font-size:11px;margin-top:6px;")
+
+        rl.addWidget(self.qr_label)
+        rl.addWidget(self.qr_hint)
+        root.addWidget(right)
 
         for b in (self.btn_copy, self.btn_browser,
                   self.btn_copy_admin, self.btn_browser_admin):
@@ -148,6 +178,7 @@ class MainWindow(QWidget):
         for b in (self.btn_copy, self.btn_browser,
                   self.btn_copy_admin, self.btn_browser_admin, self.btn_stop):
             b.setEnabled(True)
+        self._show_qr()
 
     def _on_failed(self, msg):
         self.status_dot.setStyleSheet("color:#e63;font-size:14px;")
@@ -163,6 +194,28 @@ class MainWindow(QWidget):
             b.setEnabled(False)
 
     # ── Actions ──────────────────────────────────────────────────────────────
+
+    def _show_qr(self):
+        try:
+            import qrcode
+            qr = qrcode.QRCode(box_size=4, border=2,
+                               error_correction=qrcode.constants.ERROR_CORRECT_M)
+            qr.add_data(self.url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            qimg = QImage.fromData(buf.read())
+            px = QPixmap.fromImage(qimg).scaled(
+                230, 230, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.qr_label.setPixmap(px)
+            self.qr_label.setStyleSheet("")
+            self.qr_hint.setText("Mit Handy scannen")
+            self.qr_hint.setStyleSheet("color:#888;font-size:11px;margin-top:6px;")
+        except ImportError:
+            self.qr_label.setText("pip install qrcode")
+            self.qr_label.setStyleSheet("color:#e63;font-size:11px;")
 
     def _copy_url(self):
         QApplication.clipboard().setText(self.url)
