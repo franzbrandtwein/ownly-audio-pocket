@@ -1,4 +1,4 @@
-import http.server, os, json, urllib.parse, zipfile, io, ssl, base64, threading, socket, datetime
+import http.server, os, json, urllib.parse, zipfile, io, ssl, base64, threading, socket, datetime, hashlib
 from pathlib import Path
 
 PORT       = 8765
@@ -93,12 +93,16 @@ def get_tracks():
                 genre = str(tags.get('TCON', '')).strip()
             except Exception:
                 pass
+        sha1 = hashlib.sha1()
+        with open(mp3, 'rb') as f:
+            while chunk := f.read(65536):
+                sha1.update(chunk)
         tracks.append({
             "band": mp3.parent.parent.name,
             "album": mp3.parent.name,
             "title": mp3.stem,
             "idx": idx,
-            "id": f"{mp3.parent.parent.name}/{mp3.parent.name}/{mp3.stem}",
+            "id": sha1.hexdigest(),
             "abs": str(mp3),
             "genre": genre,
         })
@@ -157,7 +161,7 @@ ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
 </svg>"""
 
 SERVICE_WORKER = r"""
-const CACHE = 'mh-shell-v15';
+const CACHE = 'mh-shell-v16';
 const SHELL = ['/', '/manifest.json', '/icon-192.svg', '/icon-512.svg'];
 
 self.addEventListener('install', e => {
