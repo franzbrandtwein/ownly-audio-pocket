@@ -156,7 +156,7 @@ ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
 </svg>"""
 
 SERVICE_WORKER = r"""
-const CACHE = 'mh-shell-v13';
+const CACHE = 'mh-shell-v14';
 const SHELL = ['/', '/manifest.json', '/icon-192.svg', '/icon-512.svg'];
 
 self.addEventListener('install', e => {
@@ -438,6 +438,7 @@ function play(d, t, titleClean) {
   } else {
     audio.src = '/track/' + t.idx;
   }
+  audio.load();
   audio.play().catch(() => {});
 }
 
@@ -451,21 +452,33 @@ function toggleShuffle() {
 
 audio.addEventListener('ended', () => {
   if (activeEl === null) return;
+  let nextTrack, nextEl;
   if (shuffle) {
     const curIdx = parseInt(activeEl.dataset.idx);
     let nextIdx;
     do { nextIdx = Math.floor(Math.random() * tracks.length); } while (nextIdx === curIdx && tracks.length > 1);
-    const next = tracks[nextIdx];
-    const nextEl = document.querySelector('.track[data-idx="' + nextIdx + '"]');
-    if (nextEl) { play(nextEl, next, cleanTitle(next.title)); nextEl.scrollIntoView({block:'nearest'}); }
+    nextTrack = tracks[nextIdx];
+    nextEl = document.querySelector('.track[data-idx="' + nextIdx + '"]');
   } else {
     const curIdx = parseInt(activeEl.dataset.idx);
-    if (curIdx + 1 < tracks.length) {
-      const next = tracks[curIdx + 1];
-      const nextEl = document.querySelector('.track[data-idx="' + (curIdx + 1) + '"]');
-      if (nextEl) { play(nextEl, next, cleanTitle(next.title)); nextEl.scrollIntoView({block:'nearest'}); }
-    }
+    if (curIdx + 1 >= tracks.length) return;
+    nextTrack = tracks[curIdx + 1];
+    nextEl = document.querySelector('.track[data-idx="' + (curIdx + 1) + '"]');
   }
+  if (!nextEl || !nextTrack) return;
+  // Set src first, then wait for canplay before play() to avoid silent failures
+  const title = cleanTitle(nextTrack.title);
+  const blobURL = blobURLs.get(nextTrack.idx);
+  audio.src = blobURL || '/track/' + nextTrack.idx;
+  audio.load();
+  if (activeEl) activeEl.classList.remove('active');
+  nextEl.classList.add('active'); activeEl = nextEl;
+  nowPlaying.textContent = '▶ ' + title + ' — ' + nextTrack.album;
+  nextEl.scrollIntoView({block: 'nearest'});
+  const tryPlay = () => { audio.play().catch(() => {}); };
+  audio.addEventListener('canplay', tryPlay, {once: true});
+  // Fallback: if canplay doesn't fire within 2s, try anyway
+  setTimeout(tryPlay, 2000);
 });
 
 // --- Cache track ---
