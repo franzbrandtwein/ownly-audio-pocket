@@ -98,6 +98,7 @@ def get_tracks():
             "album": mp3.parent.name,
             "title": mp3.stem,
             "idx": idx,
+            "id": f"{mp3.parent.parent.name}/{mp3.parent.name}/{mp3.stem}",
             "abs": str(mp3),
             "genre": genre,
         })
@@ -156,7 +157,7 @@ ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
 </svg>"""
 
 SERVICE_WORKER = r"""
-const CACHE = 'mh-shell-v14';
+const CACHE = 'mh-shell-v15';
 const SHELL = ['/', '/manifest.json', '/icon-192.svg', '/icon-512.svg'];
 
 self.addEventListener('install', e => {
@@ -426,7 +427,7 @@ function play(d, t, titleClean) {
   d.classList.add('active'); activeEl = d;
   nowPlaying.textContent = '▶ ' + titleClean + ' — ' + t.album;
 
-  const blobURL = blobURLs.get(t.idx);
+  const blobURL = blobURLs.get(t.id);
   if (blobURL) {
     audio.src = blobURL;
   } else if (!navigator.onLine) {
@@ -468,7 +469,7 @@ audio.addEventListener('ended', () => {
   if (!nextEl || !nextTrack) return;
   // Set src first, then wait for canplay before play() to avoid silent failures
   const title = cleanTitle(nextTrack.title);
-  const blobURL = blobURLs.get(nextTrack.idx);
+  const blobURL = blobURLs.get(nextTrack.id);
   audio.src = blobURL || '/track/' + nextTrack.idx;
   audio.load();
   if (activeEl) activeEl.classList.remove('active');
@@ -482,16 +483,16 @@ audio.addEventListener('ended', () => {
 });
 
 // --- Cache track ---
-async function cacheTrack(idx, btn) {
+async function cacheTrack(t, btn) {
   if (btn.classList.contains('loading') || btn.classList.contains('cached')) return true;
   btn.classList.add('loading'); btn.textContent = '↻';
   try {
-    const res = await fetch('/track/' + idx);
+    const res = await fetch('/track/' + t.idx);
     const blob = await res.blob();
-    await idbPut(idx, blob);
-    blobURLs.set(idx, URL.createObjectURL(blob));
-    cachedKeys.add(idx);
-    const dot = document.getElementById('dot-' + idx);
+    await idbPut(t.id, blob);
+    blobURLs.set(t.id, URL.createObjectURL(blob));
+    cachedKeys.add(t.id);
+    const dot = document.getElementById('dot-' + t.idx);
     if (dot) { dot.textContent = '●'; dot.classList.add('cached'); dot.title = 'Offline verfügbar'; }
     btn.classList.remove('loading'); btn.classList.add('cached'); btn.textContent = '✓ Offline';
     applyFilters();
@@ -503,11 +504,11 @@ async function cacheTrack(idx, btn) {
 }
 
 // --- Uncache track ---
-async function uncacheTrack(idx, btn) {
-  await idbDelete(idx);
-  if (blobURLs.has(idx)) { URL.revokeObjectURL(blobURLs.get(idx)); blobURLs.delete(idx); }
-  cachedKeys.delete(idx);
-  const dot = document.getElementById('dot-' + idx);
+async function uncacheTrack(t, btn) {
+  await idbDelete(t.id);
+  if (blobURLs.has(t.id)) { URL.revokeObjectURL(blobURLs.get(t.id)); blobURLs.delete(t.id); }
+  cachedKeys.delete(t.id);
+  const dot = document.getElementById('dot-' + t.idx);
   if (dot) { dot.textContent = '○'; dot.classList.remove('cached'); dot.title = 'Nicht offline'; }
   btn.classList.remove('cached'); btn.textContent = '⬇ Offline';
   applyFilters();
@@ -520,7 +521,7 @@ async function cacheAlbum(albumTracks, albumBtn) {
   if (albumBtn.classList.contains('cached')) {
     for (const t of albumTracks) {
       const trackBtn = document.getElementById('dl-' + t.idx);
-      if (trackBtn) await uncacheTrack(t.idx, trackBtn);
+      if (trackBtn) await uncacheTrack(t, trackBtn);
     }
     albumBtn.classList.remove('cached'); albumBtn.textContent = '⬇ Offline';
     return;
@@ -530,7 +531,7 @@ async function cacheAlbum(albumTracks, albumBtn) {
     const t = albumTracks[i];
     albumBtn.textContent = '↻ ' + (i+1) + '/' + albumTracks.length;
     const trackBtn = document.getElementById('dl-' + t.idx);
-    if (trackBtn && !trackBtn.classList.contains('cached')) await cacheTrack(t.idx, trackBtn);
+    if (trackBtn && !trackBtn.classList.contains('cached')) await cacheTrack(t, trackBtn);
   }
   albumBtn.classList.remove('loading'); albumBtn.classList.add('cached'); albumBtn.textContent = '✓ Offline';
 }
@@ -548,9 +549,9 @@ function applyFilters() {
   const activeCount = (offlineOnly ? 1 : 0) + activeGenres.size;
 
   document.querySelectorAll('.track-wrapper').forEach(wrapper => {
-    const idx = parseInt(wrapper.dataset.idx);
+    const trackId = wrapper.dataset.trackId;
     const genre = wrapper.dataset.genre || '';
-    const offlineOk = !offlineOnly || cachedKeys.has(idx);
+    const offlineOk = !offlineOnly || cachedKeys.has(trackId);
     const genreOk = activeGenres.size === 0 || activeGenres.has(genre);
     wrapper.classList.toggle('filtered', !(offlineOk && genreOk));
   });
@@ -578,8 +579,11 @@ openDB().then(async () => {
   cachedKeys = await idbKeys();
 
   // Preload blob URLs for cached tracks (makes play() synchronous = iOS-safe)
-  cachedKeys.forEach(idx => {
-    idbGet(idx).then(blob => { if (blob) blobURLs.set(idx, URL.createObjectURL(blob)); });
+  // Build a map from stable id → track for fast lookup
+  const trackById = {};
+  tracks.forEach(t => { trackById[t.id] = t; });
+  cachedKeys.forEach(id => {
+    idbGet(id).then(blob => { if (blob) blobURLs.set(id, URL.createObjectURL(blob)); });
   });
 
   // Group: band → album → tracks
@@ -614,7 +618,7 @@ openDB().then(async () => {
     });
 
     Object.entries(albums).forEach(([album, albumTracks]) => {
-      const allCached = albumTracks.every(t => cachedKeys.has(t.idx));
+      const allCached = albumTracks.every(t => cachedKeys.has(t.id));
 
       const albumSection = document.createElement('div');
       albumSection.className = 'album-section';
@@ -655,12 +659,13 @@ openDB().then(async () => {
         const wrapper = document.createElement('div');
         wrapper.className = 'track-wrapper';
         wrapper.dataset.idx = t.idx;
+        wrapper.dataset.trackId = t.id;
         wrapper.dataset.genre = t.genre || '';
         const d = document.createElement('div');
         d.className = 'track'; d.dataset.idx = t.idx;
         const num = t.title.match(/^(\d+)/);
         const titleClean = cleanTitle(t.title);
-        const isCached = cachedKeys.has(t.idx);
+        const isCached = cachedKeys.has(t.id);
         d.innerHTML = `<span class="track-num">${num ? num[1] : i+1}</span><span class="track-title">${titleClean}</span><span class="track-cached-dot${isCached ? ' cached' : ''}" id="dot-${t.idx}" title="${isCached ? 'Offline verfügbar' : 'Nicht offline'}">${isCached ? '●' : '○'}</span>`;
 
         // Detail panel (lazy-loaded metadata + offline button)
@@ -733,12 +738,12 @@ openDB().then(async () => {
         dlBtn.addEventListener('click', e => {
           e.stopPropagation();
           if (dlBtn.classList.contains('cached')) {
-            uncacheTrack(t.idx, dlBtn).then(() => {
+            uncacheTrack(t, dlBtn).then(() => {
               albumBtn.classList.remove('cached');
               albumBtn.textContent = '⬇ Offline';
             });
           } else {
-            cacheTrack(t.idx, dlBtn).then(() => {
+            cacheTrack(t, dlBtn).then(() => {
               if (albumTracks.every(x => document.getElementById('dl-'+x.idx)?.classList.contains('cached'))) {
                 albumBtn.classList.add('cached');
                 albumBtn.textContent = '✓ Offline';
@@ -793,7 +798,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == '/':
             body = HTML.replace('TRACKLIST_JSON', json.dumps(
-                [{"band": t["band"], "album": t["album"], "title": t["title"], "idx": t["idx"], "genre": t["genre"]} for t in TRACKS]
+                [{"band": t["band"], "album": t["album"], "title": t["title"], "idx": t["idx"], "id": t["id"], "genre": t["genre"]} for t in TRACKS]
             )).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
