@@ -54,17 +54,35 @@ jobs:
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: buildozer-${{ runner.os }}-
 
-      # ── Android SDK licenses ───────────────────────────────────────────────
-      # Must run AFTER cache restore so our license files are not overwritten
-      # by a stale cache that contains a broken android-sdk dir.
-      - name: Write Android SDK licenses
+      # ── Android SDK setup ─────────────────────────────────────────────────
+      # Problem: mkdir android-sdk/licenses/ creates the parent dir → buildozer
+      # thinks SDK is installed but finds no sdkmanager → fatal error.
+      # Fix: download the exact SDK zip buildozer would use ourselves first,
+      # extract it (creates tools/bin/sdkmanager), then write license files.
+      # The zip has no licenses/ dir so our files survive the extraction.
+      - name: Setup Android SDK and licenses
         run: |
-          SDK_LICENSE_DIR="${HOME}/.buildozer/android/platform/android-sdk/licenses"
-          mkdir -p "${SDK_LICENSE_DIR}"
+          SDK_DIR="${HOME}/.buildozer/android/platform/android-sdk"
+          SDKMANAGER="${SDK_DIR}/tools/bin/sdkmanager"
+
+          if [ ! -f "${SDKMANAGER}" ]; then
+            echo "No sdkmanager found – downloading SDK zip"
+            rm -rf "${SDK_DIR}"
+            mkdir -p "${SDK_DIR}"
+            wget -q "https://dl-ssl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip" \
+              -O /tmp/android-sdk.zip
+            cd "${SDK_DIR}" && unzip -q /tmp/android-sdk.zip
+            echo "sdkmanager available: $(ls tools/bin/sdkmanager)"
+          else
+            echo "sdkmanager already cached at ${SDKMANAGER}"
+          fi
+
+          # License files – zip has no licenses/ dir so these survive unzip above
+          mkdir -p "${SDK_DIR}/licenses"
           printf '24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e' \
-            > "${SDK_LICENSE_DIR}/android-sdk-license"
+            > "${SDK_DIR}/licenses/android-sdk-license"
           printf '84831b9409646a918e30573bab4c9c91346d8abd' \
-            > "${SDK_LICENSE_DIR}/android-sdk-preview-license"
+            > "${SDK_DIR}/licenses/android-sdk-preview-license"
 
       # ── Clear stale p4a clone (avoids wrong Python version in cache) ───────
       - name: Clear cached p4a clone
