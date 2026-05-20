@@ -998,11 +998,127 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
+SOAP_PORT = 8767
+
+def start_soap_server():
+    """SOAP service on SOAP_PORT. Also serves plain HTTP /audio/<idx> for Kivy client."""
+    try:
+        from spyne import Application, rpc, ServiceBase, Integer, Unicode
+        from spyne.model import ComplexModel, Array
+        from spyne.protocol.soap import Soap11
+        from spyne.server.wsgi import WsgiApplication
+        from wsgiref.simple_server import make_server, WSGIRequestHandler
+    except ImportError as e:
+        print(f"[SOAP] nicht verfügbar (pip install spyne): {e}")
+        return
+
+    class TrackInfo(ComplexModel):
+        idx   = Integer
+        id    = Unicode
+        band  = Unicode
+        album = Unicode
+        title = Unicode
+        genre = Unicode
+
+    class TrackMeta(ComplexModel):
+        title    = Unicode
+        artist   = Unicode
+        album    = Unicode
+        year     = Unicode
+        genre    = Unicode
+        track    = Unicode
+        duration = Unicode
+        cover    = Unicode  # base64 data-URI
+
+    class ConfigInfo(ComplexModel):
+        music_dir   = Unicode
+        track_count = Integer
+
+    class OwnlyAudioService(ServiceBase):
+        @rpc(_returns=Array(TrackInfo))
+        def GetTracks(ctx):
+            return [TrackInfo(
+                idx=t['idx'], id=t['id'], band=t['band'],
+                album=t['album'], title=t['title'], genre=t.get('genre', '')
+            ) for t in TRACKS]
+
+        @rpc(Integer, _returns=TrackMeta)
+        def GetTrackMeta(ctx, idx):
+            if idx is None or idx < 0 or idx >= len(TRACKS):
+                return None
+            m = get_meta(TRACKS[idx])
+            return TrackMeta(
+                title=m.get('title', ''), artist=m.get('artist', ''),
+                album=m.get('album', ''), year=str(m.get('year', '')),
+                genre=m.get('genre', ''), track=str(m.get('track', '')),
+                duration=m.get('duration', ''), cover=m.get('cover', '')
+            )
+
+        @rpc(Integer, _returns=Unicode)
+        def GetStreamUrl(ctx, idx):
+            return f"http://{LOCAL_IP}:{SOAP_PORT}/audio/{idx}"
+
+        @rpc(_returns=ConfigInfo)
+        def GetConfig(ctx):
+            return ConfigInfo(
+                music_dir=str(CONFIG['music_dir']),
+                track_count=len(TRACKS)
+            )
+
+        @rpc(Unicode, _returns=Integer)
+        def SetMusicDir(ctx, path):
+            CONFIG['music_dir'] = Path(path)
+            reload_tracks()
+            return len(TRACKS)
+
+        @rpc(_returns=Integer)
+        def ReloadTracks(ctx):
+            reload_tracks()
+            return len(TRACKS)
+
+    soap_app = Application(
+        [OwnlyAudioService],
+        tns='http://ownly.audio/soap',
+        in_protocol=Soap11(validator=None),
+        out_protocol=Soap11(),
+    )
+    soap_wsgi = WsgiApplication(soap_app)
+
+    class SoapAndAudioWsgi:
+        """Routes /audio/<idx> to plain-HTTP audio streaming; everything else → SOAP."""
+        def __call__(self, environ, start_response):
+            path = environ.get('PATH_INFO', '/')
+            if path.startswith('/audio/'):
+                try:
+                    idx = int(path[7:])
+                    fp = TRACKS[idx]['abs']
+                    size = os.path.getsize(fp)
+                    start_response('200 OK', [
+                        ('Content-Type', 'audio/mpeg'),
+                        ('Content-Length', str(size)),
+                        ('Accept-Ranges', 'bytes'),
+                        ('Access-Control-Allow-Origin', '*'),
+                    ])
+                    with open(fp, 'rb') as f:
+                        return [f.read()]
+                except Exception:
+                    start_response('404 Not Found', [('Content-Length', '0')])
+                    return [b'']
+            return soap_wsgi(environ, start_response)
+
+    class _Silent(WSGIRequestHandler):
+        def log_message(self, *_): pass
+
+    srv = make_server('0.0.0.0', SOAP_PORT, SoapAndAudioWsgi(), handler_class=_Silent)
+    srv.serve_forever()
+
+
 def start_server():
-    """Start both servers. Blocks until the main HTTPS server is stopped."""
+    """Start all servers. Blocks until the main HTTPS server is stopped."""
     admin_httpd = http.server.HTTPServer(('0.0.0.0', ADMIN_PORT), AdminHandler)
-    t = threading.Thread(target=admin_httpd.serve_forever, daemon=True)
-    t.start()
+    threading.Thread(target=admin_httpd.serve_forever, daemon=True).start()
+
+    threading.Thread(target=start_soap_server, daemon=True).start()
 
     cert_file, key_file = ensure_cert()
     httpd = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
@@ -1012,6 +1128,7 @@ def start_server():
     httpd.serve_forever()
 
 if __name__ == '__main__':
-    print(f"Admin: http://0.0.0.0:{ADMIN_PORT}")
-    print(f"https://0.0.0.0:{PORT}")
+    print(f"Admin:  http://0.0.0.0:{ADMIN_PORT}")
+    print(f"SOAP:   http://0.0.0.0:{SOAP_PORT}  (WSDL: ?wsdl, Audio: /audio/<idx>)")
+    print(f"Player: https://0.0.0.0:{PORT}")
     start_server()

@@ -2,3 +2,7 @@ mutagen>=1.46
 cryptography>=41.0
 PyQt5>=5.15
 qrcode[pil]>=7.4
+spyne>=2.14
+lxml>=4.9
+zeep>=4.2
+kivy>=2.3
