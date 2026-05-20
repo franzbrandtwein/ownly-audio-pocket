@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'main.py'
       - 'kivy_app.py'
       - 'buildozer.spec'
       - '.github/workflows/build-apk.yml'
