@@ -9,17 +9,21 @@ import threading
 import tempfile
 import os
 import urllib.request
+import re
 
 from kivy.app import App
 from kivy.lang import Builder
 from kivy.uix.recycleview import RecycleView
 from kivy.uix.recycleview.views import RecycleDataViewBehavior
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.popup import Popup
+from kivy.uix.image import Image as KivyImage
 from kivy.properties import (
     BooleanProperty, StringProperty, NumericProperty
 )
 from kivy.core.audio import SoundLoader
 from kivy.clock import Clock
+from kivy.graphics.texture import Texture
 from kivy.metrics import dp
 
 # ---------------------------------------------------------------------------
@@ -108,13 +112,21 @@ KV = """
             background_color: (.18, .18, .18, 1)
             foreground_color: (.9, .9, .9, 1)
             cursor_color: (1, .5, .2, 1)
-            size_hint_x: 0.65
+            size_hint_x: 0.55
             on_text_validate: app.connect(self.text)
+
+        Button:
+            text: '📷'
+            font_size: dp(16)
+            size_hint_x: None
+            width: dp(42)
+            background_color: (.18, .18, .18, 1)
+            on_release: app.open_qr_scan()
 
         Button:
             text: 'Verbinden'
             font_size: dp(12)
-            size_hint_x: 0.3
+            size_hint_x: 0.28
             background_color: (.93, .4, .2, 1)
             on_release: app.connect(server_input.text)
 
@@ -241,6 +253,111 @@ class TrackList(RecycleView):
 
 class OwnlyRoot(BoxLayout):
     pass
+
+
+# ---------------------------------------------------------------------------
+# QR Scanner
+# ---------------------------------------------------------------------------
+
+class QRScanPopup(Popup):
+    """Camera overlay that decodes QR codes using OpenCV."""
+
+    def __init__(self, on_result, **kwargs):
+        super().__init__(
+            title='QR Code scannen',
+            size_hint=(.95, .85),
+            auto_dismiss=False,
+            **kwargs
+        )
+        self._on_result = on_result
+        self._cap       = None
+        self._running   = False
+        self._detector  = None
+
+        # Layout: camera feed + status + close button
+        root = BoxLayout(orientation='vertical', spacing=dp(8),
+                         padding=dp(8))
+
+        self._cam_img = KivyImage(allow_stretch=True)
+        self._status  = __import__('kivy.uix.label', fromlist=['Label']).Label(
+            text='Kamera wird geöffnet …',
+            size_hint_y=None, height=dp(28),
+            color=(.7, .7, .7, 1), font_size=dp(12)
+        )
+
+        from kivy.uix.button import Button
+        close_btn = Button(
+            text='Abbrechen',
+            size_hint_y=None, height=dp(40),
+            background_color=(.3, .3, .3, 1)
+        )
+        close_btn.bind(on_release=lambda *_: self._close())
+
+        root.add_widget(self._cam_img)
+        root.add_widget(self._status)
+        root.add_widget(close_btn)
+        self.content = root
+
+    def on_open(self):
+        try:
+            import cv2
+            self._detector = cv2.QRCodeDetector()
+            self._cap = cv2.VideoCapture(0)
+            if not self._cap.isOpened():
+                self._status.text = '❌ Keine Kamera gefunden'
+                return
+            self._running = True
+            self._tick = Clock.schedule_interval(self._update_frame, 1 / 20)
+        except ImportError:
+            self._status.text = '❌ opencv-python nicht installiert'
+
+    def _update_frame(self, dt):
+        if not self._running or self._cap is None:
+            return
+        import cv2, numpy as np
+        ret, frame = self._cap.read()
+        if not ret:
+            return
+
+        # Try to decode QR code
+        data, _, _ = self._detector.detectAndDecode(frame)
+        if data:
+            self._running = False
+            Clock.unschedule(self._tick)
+            self._cap.release()
+            self._cap = None
+            Clock.schedule_once(lambda _: self._on_decoded(data))
+            return
+
+        # Draw scanning overlay (horizontal line animation)
+        h, w = frame.shape[:2]
+        t = int(Clock.get_boottime() * 80) % h
+        cv2.line(frame, (0, t), (w, t), (238, 102, 51), 2)
+
+        # Convert BGR → RGB → Kivy texture (flipped vertically)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_flip = np.flipud(frame_rgb)
+        tex = Texture.create(size=(w, h), colorfmt='rgb')
+        tex.blit_buffer(frame_flip.tobytes(), colorfmt='rgb', bufferfmt='ubyte')
+        self._cam_img.texture = tex
+        self._status.text = '🔍 QR Code suchen …'
+
+    def _on_decoded(self, data):
+        self._status.text = f'✓ Erkannt: {data}'
+        self.dismiss()
+        self._on_result(data)
+
+    def _close(self):
+        self._running = False
+        if hasattr(self, '_tick'):
+            Clock.unschedule(self._tick)
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+        self.dismiss()
+
+    def on_dismiss(self):
+        self._close()
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +548,27 @@ class OwnlyApp(App):
         self._shuffle = not self._shuffle
         btn = self._root.ids.shuffle_btn
         btn.background_color = (.93, .4, .2, 1) if self._shuffle else (.18, .18, .18, 1)
+
+    # ── QR scan ──────────────────────────────────────────────────────────────
+
+    def open_qr_scan(self):
+        """Open camera popup to scan the server panel QR code."""
+        popup = QRScanPopup(on_result=self._on_qr_scanned)
+        popup.open()
+
+    def _on_qr_scanned(self, data):
+        """
+        Extract IP from scanned URL (e.g. https://192.168.1.5:8765)
+        and connect to SOAP port 8767 on that host.
+        """
+        m = re.search(r'https?://([0-9a-zA-Z._-]+)(?::(\d+))?', data)
+        if not m:
+            self._root.ids.now_playing.text = f'❌ Kein gültiger Server-Link: {data}'
+            return
+        host = m.group(1)
+        addr = f'{host}:8767'
+        self._root.ids.server_input.text = addr
+        self.connect(addr)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 

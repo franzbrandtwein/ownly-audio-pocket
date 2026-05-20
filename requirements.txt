@@ -6,3 +6,5 @@ spyne>=2.14
 lxml>=4.9
 zeep>=4.2
 kivy>=2.3
+opencv-python>=4.8
+numpy>=1.24
