@@ -2,14 +2,20 @@
 """
 Ownly Audio Pocket – Kivy Client
 Verbindet sich per SOAP (Port 8767) mit dem Server und spielt Musik ab.
+
+APK-Build: buildozer android debug  (siehe buildozer.spec)
 """
+
+__version__ = '1.0.0'
 
 import random
 import threading
 import tempfile
 import os
-import urllib.request
 import re
+import urllib.request
+import urllib.error
+import xml.etree.ElementTree as ET
 
 from kivy.app import App
 from kivy.lang import Builder
@@ -18,6 +24,8 @@ from kivy.uix.recycleview.views import RecycleDataViewBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.popup import Popup
 from kivy.uix.image import Image as KivyImage
+from kivy.uix.label import Label
+from kivy.uix.button import Button
 from kivy.properties import (
     BooleanProperty, StringProperty, NumericProperty
 )
@@ -25,6 +33,49 @@ from kivy.core.audio import SoundLoader
 from kivy.clock import Clock
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp
+from kivy.utils import platform
+
+# ---------------------------------------------------------------------------
+# Minimal SOAP client  (no zeep / lxml required)
+# ---------------------------------------------------------------------------
+_SOAP_NS   = 'http://ownly.audio/soap'
+_SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
+
+def _soap_request(host, port, method, **params):
+    """
+    Execute a SOAP 1.1 call and return the parsed XML root element.
+    Uses only stdlib – works on Android without zeep/lxml.
+    """
+    body_inner = ''.join(
+        f'<tns:{k}>{v}</tns:{k}>' for k, v in params.items()
+    )
+    envelope = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<soap:Envelope'
+        '  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+        f'  xmlns:tns="{_SOAP_NS}">'
+        '<soap:Body>'
+        f'<tns:{method}>{body_inner}</tns:{method}>'
+        '</soap:Body>'
+        '</soap:Envelope>'
+    )
+    url = f'http://{host}:{port}/'
+    req = urllib.request.Request(
+        url,
+        data=envelope.encode('utf-8'),
+        headers={
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction':   f'"{_SOAP_NS}#{method}"',
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return ET.fromstring(resp.read())
+
+
+def _soap_text(element, tag):
+    """Find first child matching '{_SOAP_NS}tag' and return its text."""
+    node = element.find(f'{{{_SOAP_NS}}}{tag}')
+    return (node.text or '') if node is not None else ''
 
 # ---------------------------------------------------------------------------
 # KV layout
@@ -256,11 +307,17 @@ class OwnlyRoot(BoxLayout):
 
 
 # ---------------------------------------------------------------------------
-# QR Scanner
+# QR Scanner  (cv2.VideoCapture on desktop · Kivy Camera on Android)
 # ---------------------------------------------------------------------------
 
 class QRScanPopup(Popup):
-    """Camera overlay that decodes QR codes using OpenCV."""
+    """
+    Camera overlay that decodes QR codes using OpenCV.
+
+    Desktop  → cv2.VideoCapture(0) grabs frames directly.
+    Android  → Kivy Camera widget captures via Android Camera API;
+               cv2.QRCodeDetector reads the texture pixels.
+    """
 
     def __init__(self, on_result, **kwargs):
         super().__init__(
@@ -270,22 +327,24 @@ class QRScanPopup(Popup):
             **kwargs
         )
         self._on_result = on_result
-        self._cap       = None
         self._running   = False
         self._detector  = None
+        self._cv_cap    = None   # desktop only
+        self._kivy_cam  = None   # android only
+        self._tick      = None
 
-        # Layout: camera feed + status + close button
-        root = BoxLayout(orientation='vertical', spacing=dp(8),
-                         padding=dp(8))
+        root = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(8))
 
+        # Camera feed placeholder – replaced by Kivy Camera on Android
         self._cam_img = KivyImage(allow_stretch=True)
-        self._status  = __import__('kivy.uix.label', fromlist=['Label']).Label(
+        self._cam_container = BoxLayout()
+        self._cam_container.add_widget(self._cam_img)
+
+        self._status = Label(
             text='Kamera wird geöffnet …',
             size_hint_y=None, height=dp(28),
             color=(.7, .7, .7, 1), font_size=dp(12)
         )
-
-        from kivy.uix.button import Button
         close_btn = Button(
             text='Abbrechen',
             size_hint_y=None, height=dp(40),
@@ -293,68 +352,147 @@ class QRScanPopup(Popup):
         )
         close_btn.bind(on_release=lambda *_: self._close())
 
-        root.add_widget(self._cam_img)
+        root.add_widget(self._cam_container)
         root.add_widget(self._status)
         root.add_widget(close_btn)
         self.content = root
+
+    # ── open ────────────────────────────────────────────────────────────────
 
     def on_open(self):
         try:
             import cv2
             self._detector = cv2.QRCodeDetector()
-            self._cap = cv2.VideoCapture(0)
-            if not self._cap.isOpened():
-                self._status.text = '❌ Keine Kamera gefunden'
-                return
-            self._running = True
-            self._tick = Clock.schedule_interval(self._update_frame, 1 / 20)
         except ImportError:
-            self._status.text = '❌ opencv-python nicht installiert'
-
-    def _update_frame(self, dt):
-        if not self._running or self._cap is None:
+            self._status.text = '❌ OpenCV nicht verfügbar'
             return
-        import cv2, numpy as np
-        ret, frame = self._cap.read()
+
+        if platform == 'android':
+            self._open_android()
+        else:
+            self._open_desktop()
+
+    def _open_desktop(self):
+        import cv2
+        self._cv_cap = cv2.VideoCapture(0)
+        if not self._cv_cap.isOpened():
+            self._status.text = '❌ Keine Kamera gefunden'
+            return
+        self._running = True
+        self._tick = Clock.schedule_interval(self._update_desktop, 1 / 20)
+
+    def _open_android(self):
+        try:
+            from android.permissions import (  # type: ignore
+                request_permissions, check_permission, Permission
+            )
+            if check_permission(Permission.CAMERA):
+                self._start_kivy_camera()
+            else:
+                request_permissions(
+                    [Permission.CAMERA],
+                    self._on_permission_result
+                )
+        except ImportError:
+            # android.permissions not available – try camera anyway
+            self._start_kivy_camera()
+
+    def _on_permission_result(self, permissions, results):
+        if results and all(results):
+            self._start_kivy_camera()
+        else:
+            self._status.text = '❌ Kamera-Berechtigung verweigert'
+
+    def _start_kivy_camera(self):
+        from kivy.uix.camera import Camera  # type: ignore
+        self._cam_container.clear_widgets()
+        self._kivy_cam = Camera(
+            resolution=(640, 480),
+            play=True,
+            allow_stretch=True,
+        )
+        self._cam_container.add_widget(self._kivy_cam)
+        self._running = True
+        self._tick = Clock.schedule_interval(self._update_android, 1 / 10)
+
+    # ── per-frame update ─────────────────────────────────────────────────────
+
+    def _update_desktop(self, dt):
+        if not self._running or self._cv_cap is None:
+            return
+        import cv2
+        import numpy as np
+        ret, frame = self._cv_cap.read()
         if not ret:
             return
 
-        # Try to decode QR code
         data, _, _ = self._detector.detectAndDecode(frame)
         if data:
-            self._running = False
-            Clock.unschedule(self._tick)
-            self._cap.release()
-            self._cap = None
-            Clock.schedule_once(lambda _: self._on_decoded(data))
+            self._finish(data)
             return
 
-        # Draw scanning overlay (horizontal line animation)
+        # Animated scan line
         h, w = frame.shape[:2]
         t = int(Clock.get_boottime() * 80) % h
         cv2.line(frame, (0, t), (w, t), (238, 102, 51), 2)
 
-        # Convert BGR → RGB → Kivy texture (flipped vertically)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_flip = np.flipud(frame_rgb)
-        tex = Texture.create(size=(w, h), colorfmt='rgb')
-        tex.blit_buffer(frame_flip.tobytes(), colorfmt='rgb', bufferfmt='ubyte')
+        # BGR → RGB → Kivy texture (flip vertically)
+        rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        flip = np.flipud(rgb)
+        tex  = Texture.create(size=(w, h), colorfmt='rgb')
+        tex.blit_buffer(flip.tobytes(), colorfmt='rgb', bufferfmt='ubyte')
         self._cam_img.texture = tex
         self._status.text = '🔍 QR Code suchen …'
 
-    def _on_decoded(self, data):
+    def _update_android(self, dt):
+        if not self._running or self._kivy_cam is None:
+            return
+        import cv2
+        import numpy as np
+        tex = self._kivy_cam.texture
+        if tex is None:
+            return
+
+        # Kivy texture: RGBA, bottom-left origin → convert for cv2
+        pixels = np.frombuffer(tex.pixels, dtype=np.uint8)
+        frame  = pixels.reshape(tex.height, tex.width, 4)[:, :, :3]
+        frame  = np.flipud(frame)                           # correct orientation
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        data, _, _ = self._detector.detectAndDecode(frame_bgr)
+        if data:
+            self._finish(data)
+        else:
+            self._status.text = '🔍 QR Code suchen …'
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _finish(self, data):
+        self._running = False
+        if self._tick:
+            Clock.unschedule(self._tick)
+        self._release_camera()
         self._status.text = f'✓ Erkannt: {data}'
+        Clock.schedule_once(lambda _: self._deliver(data))
+
+    def _deliver(self, data):
         self.dismiss()
         self._on_result(data)
 
     def _close(self):
         self._running = False
-        if hasattr(self, '_tick'):
+        if self._tick:
             Clock.unschedule(self._tick)
-        if self._cap:
-            self._cap.release()
-            self._cap = None
+        self._release_camera()
         self.dismiss()
+
+    def _release_camera(self):
+        if self._cv_cap:
+            self._cv_cap.release()
+            self._cv_cap = None
+        if self._kivy_cam:
+            self._kivy_cam.play = False
+            self._kivy_cam = None
 
     def on_dismiss(self):
         self._close()
@@ -376,7 +514,6 @@ class OwnlyApp(App):
         self._active_srv_idx = -1  # server-side idx of currently playing track
         self._sound          = None
         self._shuffle        = False
-        self._soap_client    = None
         self._server_host    = ''
         self._soap_port      = 8767
         self._tmp_file       = None
@@ -399,19 +536,16 @@ class OwnlyApp(App):
 
     def _do_connect(self):
         try:
-            from zeep import Client
-            url = f'http://{self._server_host}:{self._soap_port}/?wsdl'
-            self._soap_client = Client(url)
-            raw = self._soap_client.service.GetTracks()
+            root = _soap_request(self._server_host, self._soap_port, 'GetTracks')
             tracks = []
-            for t in (raw or []):
+            for item in root.iter(f'{{{_SOAP_NS}}}TrackInfo'):
                 tracks.append({
-                    'idx':      int(t.idx),
-                    'track_id': t.id    or '',
-                    'title':    t.title or '',
-                    'band':     t.band  or '',
-                    'album':    t.album or '',
-                    'genre':    t.genre or '',
+                    'idx':       int(_soap_text(item, 'idx') or 0),
+                    'track_id':  _soap_text(item, 'id'),
+                    'title':     _soap_text(item, 'title'),
+                    'band':      _soap_text(item, 'band'),
+                    'album':     _soap_text(item, 'album'),
+                    'genre':     _soap_text(item, 'genre'),
                     'is_active': False,
                 })
             Clock.schedule_once(lambda _: self._on_connected(tracks))
@@ -482,13 +616,29 @@ class OwnlyApp(App):
 
     def _fetch_and_play(self, url, label):
         try:
-            tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+            # On Android use app cache dir; elsewhere use system tmp
+            if platform == 'android':
+                try:
+                    from jnius import autoclass  # type: ignore
+                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                    cache_dir = str(
+                        PythonActivity.mActivity.getCacheDir().getAbsolutePath()
+                    )
+                except Exception:
+                    cache_dir = tempfile.gettempdir()
+                tmp_path = os.path.join(cache_dir, f'ownly_{os.getpid()}.mp3')
+                tmp_fd = open(tmp_path, 'wb')
+            else:
+                tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+                tmp_path = tmp.name
+                tmp_fd = tmp
+
             with urllib.request.urlopen(url, timeout=60) as resp:
                 while chunk := resp.read(65536):
-                    tmp.write(chunk)
-            tmp.close()
-            self._tmp_file = tmp.name
-            Clock.schedule_once(lambda _: self._play_file(tmp.name, label))
+                    tmp_fd.write(chunk)
+            tmp_fd.close()
+            self._tmp_file = tmp_path
+            Clock.schedule_once(lambda _: self._play_file(tmp_path, label))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 

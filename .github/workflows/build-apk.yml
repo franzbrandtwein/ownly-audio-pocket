@@ -1,0 +1,93 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kivy_app.py'
+      - 'buildozer.spec'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04   # glibc 2.31 – required for p4a NDK toolchains
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── Python 3.11 (p4a requires the build host to use 3.11) ─────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── Java (needed by Gradle / aapt) ────────────────────────────────────
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ── System deps ───────────────────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip autoconf libtool pkg-config \
+            libssl-dev libffi-dev libltdl-dev \
+            python3-dev python3-pip
+
+      # ── pip deps ──────────────────────────────────────────────────────────
+      - name: Install Python build tools
+        run: |
+          pip install --upgrade pip
+          pip install "cython<3" buildozer
+
+      # ── Global Buildozer cache (SDK + NDK + p4a) ──────────────────────────
+      # Key includes spec hash so cache is invalidated on requirement changes.
+      # Project cache (.buildozer/) is intentionally NOT cached – stale
+      # cross-compiled artifacts cause hard-to-debug build failures.
+      - name: Restore global Buildozer cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: buildozer-${{ runner.os }}-
+
+      # ── Android SDK licenses ───────────────────────────────────────────────
+      # Must run AFTER cache restore so our license files are not overwritten
+      # by a stale cache that contains a broken android-sdk dir.
+      - name: Write Android SDK licenses
+        run: |
+          SDK_LICENSE_DIR="${HOME}/.buildozer/android/platform/android-sdk/licenses"
+          mkdir -p "${SDK_LICENSE_DIR}"
+          printf '24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e' \
+            > "${SDK_LICENSE_DIR}/android-sdk-license"
+          printf '84831b9409646a918e30573bab4c9c91346d8abd' \
+            > "${SDK_LICENSE_DIR}/android-sdk-preview-license"
+
+      # ── Clear stale p4a clone (avoids wrong Python version in cache) ───────
+      - name: Clear cached p4a clone
+        run: rm -rf "${HOME}/.buildozer/android/platform/python-for-android"
+
+      # ── Build ─────────────────────────────────────────────────────────────
+      - name: Build APK
+        run: |
+          set -o pipefail
+          buildozer android debug 2>&1 | tee build.log
+
+      # ── Upload artifact ───────────────────────────────────────────────────
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ownly-audio-pocket-debug
+          path: .buildozer/android/platform/build-arm64-v8a*/dists/*/bin/*.apk
+          if-no-files-found: error
+
+      # ── Upload build log on failure ────────────────────────────────────────
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log

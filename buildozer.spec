@@ -1,0 +1,34 @@
+[app]
+title = Ownly Audio Pocket
+package.name = ownlyaudiopocket
+package.domain = de.ownly
+version = 1.0.0
+
+source.dir = .
+source.include_exts = py
+source.exclude_dirs = music,dist,.certs,.github,__pycache__
+
+# ── Python / Kivy ──────────────────────────────────────────────────────────
+# p4a v2024.01.21 uses Python 3.11.5 and NDK r25b (stable, avoids 3.14 ABI)
+requirements = python3==3.11.5,kivy==2.3.0,numpy,opencv,android,jnius
+
+p4a.branch = v2024.01.21
+
+# ── Android ───────────────────────────────────────────────────────────────
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA
+android.api = 35
+android.minapi = 24
+android.archs = arm64-v8a
+android.accept_sdk_license = True
+android.allow_backup = False
+android.enable_androidx = True
+android.release_artifact = apk
+android.debug = False
+
+# ── UI ────────────────────────────────────────────────────────────────────
+orientation = portrait
+fullscreen = 0
+
+[buildozer]
+log_level = 2
+warn_on_root = 0

@@ -1,10 +1,15 @@
+# Server + GUI (Desktop)
 mutagen>=1.46
 cryptography>=41.0
 PyQt5>=5.15
 qrcode[pil]>=7.4
 spyne>=2.14
 lxml>=4.9
-zeep>=4.2
+
+# Kivy client (Desktop)
 kivy>=2.3
-opencv-python>=4.8
 numpy>=1.24
+opencv-python>=4.8   # desktop only; APK uses p4a opencv recipe (see buildozer.spec)
+
+# Kivy client (Desktop – SOAP; APK uses stdlib urllib+ElementTree)
+zeep>=4.2
