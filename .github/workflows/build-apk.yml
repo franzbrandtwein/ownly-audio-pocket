@@ -100,7 +100,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ownly-audio-pocket-debug
-          path: .buildozer/android/platform/build-arm64-v8a*/dists/*/bin/*.apk
+          path: bin/*.apk
           if-no-files-found: error
 
       # ── Upload build log on failure ────────────────────────────────────────
