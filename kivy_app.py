@@ -167,8 +167,8 @@ KV = """
             on_text_validate: app.connect(self.text)
 
         Button:
-            text: '📷'
-            font_size: dp(16)
+            text: 'QR'
+            font_size: dp(13)
             size_hint_x: None
             width: dp(42)
             background_color: (.18, .18, .18, 1)
@@ -241,28 +241,28 @@ KV = """
             height: dp(44)
 
             Button:
-                text: '⏮'
+                text: '|<'
                 font_size: dp(16)
                 background_color: (.18, .18, .18, 1)
                 on_release: app.prev_track()
 
             Button:
                 id: play_btn
-                text: '▶'
-                font_size: dp(18)
+                text: '>'
+                font_size: dp(20)
                 background_color: (.93, .4, .2, 1)
                 on_release: app.toggle_play()
 
             Button:
-                text: '⏭'
+                text: '>|'
                 font_size: dp(16)
                 background_color: (.18, .18, .18, 1)
                 on_release: app.next_track()
 
             Button:
                 id: shuffle_btn
-                text: '🔀'
-                font_size: dp(14)
+                text: 'Mix'
+                font_size: dp(13)
                 background_color: (.18, .18, .18, 1)
                 on_release: app.toggle_shuffle()
 """
@@ -508,6 +508,11 @@ class OwnlyApp(App):
     def build(self):
         Builder.load_string(KV)
         self._root = OwnlyRoot()
+        if platform == 'android':
+            from kivy.core.window import Window
+            Window.softinput_mode = 'below_target'
+            from kivy.clock import Clock as _Clock
+            _Clock.schedule_once(self._apply_android_insets, 0.5)
 
         self._all_tracks    = []   # raw list from SOAP
         self._filtered      = []   # currently visible (matches search)
@@ -519,6 +524,12 @@ class OwnlyApp(App):
         self._tmp_file       = None
 
         return self._root
+
+    def _apply_android_insets(self, dt):
+        from kivy.core.window import Window
+        from kivy.metrics import dp
+        sb = getattr(Window, 'statusbar_height', dp(28))
+        self._root.padding = [0, sb, 0, dp(52)]
 
     # ── Connection ──────────────────────────────────────────────────────────
 
@@ -593,7 +604,7 @@ class OwnlyApp(App):
 
         label = f'{track["title"]}  —  {track["band"]}'
         self._root.ids.now_playing.text = f'⏳ {label}'
-        self._root.ids.play_btn.text = '⏸'
+        self._root.ids.play_btn.text = '||'
 
         if self._sound:
             self._sound.stop()
@@ -647,14 +658,14 @@ class OwnlyApp(App):
         if self._sound:
             self._sound.bind(on_stop=self._on_track_ended)
             self._sound.play()
-            self._root.ids.now_playing.text = f'▶ {label}'
+            self._root.ids.now_playing.text = f'> {label}'
         else:
             self._root.ids.now_playing.text = f'❌ Kein Audio-Backend: {label}'
-            self._root.ids.play_btn.text = '▶'
+            self._root.ids.play_btn.text = '>'
 
     def _on_play_error(self, msg):
         self._root.ids.now_playing.text = f'❌ {msg[:60]}'
-        self._root.ids.play_btn.text = '▶'
+        self._root.ids.play_btn.text = '>'
 
     def _on_track_ended(self, *_):
         Clock.schedule_once(lambda _: self._auto_next())
@@ -677,10 +688,10 @@ class OwnlyApp(App):
         if self._sound:
             if self._sound.state == 'play':
                 self._sound.stop()
-                self._root.ids.play_btn.text = '▶'
+                self._root.ids.play_btn.text = '>'
             else:
                 self._sound.play()
-                self._root.ids.play_btn.text = '⏸'
+                self._root.ids.play_btn.text = '||'
 
     def next_track(self):
         self._auto_next()
