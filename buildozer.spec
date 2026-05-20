@@ -10,7 +10,7 @@ source.exclude_dirs = music,dist,.certs,.github,__pycache__
 
 # ── Python / Kivy ──────────────────────────────────────────────────────────
 # p4a v2024.01.21 uses Python 3.11.5 and NDK r25b (stable, avoids 3.14 ABI)
-requirements = python3==3.11.5,kivy==2.3.0,numpy,opencv,android,jnius
+requirements = python3==3.11.5,kivy==2.3.0,android,jnius
 
 p4a.branch = v2024.01.21
 

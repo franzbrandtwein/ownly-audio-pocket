@@ -41,7 +41,7 @@ jobs:
       - name: Install Python build tools
         run: |
           pip install --upgrade pip
-          pip install "cython<3" buildozer
+          pip install "cython>=3.0" buildozer
 
       # ── Global Buildozer cache (SDK + NDK + p4a) ──────────────────────────
       # Key includes spec hash so cache is invalidated on requirement changes.
