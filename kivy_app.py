@@ -838,7 +838,6 @@ class OwnlyApp(App):
                 pkg, 'com.journeyapps.barcodescanner.CaptureActivity'
             ))
             intent.putExtra('SCAN_FORMATS', 'QR_CODE')
-            intent.putExtra('SAVE_HISTORY', False)
             PythonActivity.mActivity.startActivityForResult(intent, 49374)
         except Exception as e:
             # Show full error so it's readable
