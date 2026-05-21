@@ -768,6 +768,7 @@ class OwnlyApp(App):
         self._filtered      = []
         self._active_srv_idx = -1
         self._sound          = None
+        self._old_sound      = None
         self._shuffle        = False
         self._mp_listener    = None
         self._progress_clock = None
@@ -1067,14 +1068,18 @@ class OwnlyApp(App):
         self._root.ids.play_btn.text = '||'
 
         if self._sound:
-            try:
-                self._sound.stop()
-                # Release if Android MediaPlayer
-                if hasattr(self._sound, 'release'):
-                    self._sound.release()
-            except Exception:
-                pass
-            self._sound = None
+            if platform == 'android':
+                # ExoPlayer must only be released on its own Looper thread.
+                # Stash for release inside _setup_exoplayer (via Clock.schedule_once).
+                self._old_sound = self._sound
+                self._sound = None
+                self._stop_progress_clock()
+            else:
+                try:
+                    self._sound.stop()
+                except Exception:
+                    pass
+                self._sound = None
 
         # Clean up previous temp file
         if self._tmp_file and os.path.exists(self._tmp_file):
@@ -1134,19 +1139,29 @@ class OwnlyApp(App):
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 
     def _setup_exoplayer(self, url, label):
-        """Main-thread: create ExoPlayer, attach listener, prepare and play."""
+        """Main-thread: release old player, create ExoPlayer, prepare and play."""
         try:
             from jnius import autoclass  # type: ignore
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
             MediaItem = autoclass('androidx.media3.common.MediaItem')
+            Looper = autoclass('android.os.Looper')
 
-            if self._sound is not None:
-                try:
-                    self._sound.release()
-                except Exception:
-                    pass
-                self._sound = None
+            # Ensure this thread has a Looper (required by ExoPlayer).
+            try:
+                Looper.prepare()
+            except Exception:
+                pass  # already prepared
+
+            # Release old player on the correct thread.
+            for old in (self._old_sound, self._sound):
+                if old is not None:
+                    try:
+                        old.release()
+                    except Exception:
+                        pass
+            self._old_sound = None
+            self._sound = None
 
             player = ExoPlayerBuilder(PythonActivity.mActivity).build()
 
