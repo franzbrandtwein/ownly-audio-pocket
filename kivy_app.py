@@ -42,6 +42,27 @@ from kivy.utils import platform
 _SOAP_NS   = 'http://ownly.audio/soap'
 _SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
 
+# Android MediaPlayer completion listener — defined once to avoid jnius
+# re-registering a Java proxy class on every play() call (→ crash).
+_AndroidListenerClass = None
+
+def _get_android_listener_class():
+    global _AndroidListenerClass
+    if _AndroidListenerClass is None:
+        from jnius import PythonJavaClass, java_method  # type: ignore
+        class _Listener(PythonJavaClass):
+            __javainterfaces__ = ['android/media/MediaPlayer$OnCompletionListener']
+            __javacontext__ = 'app'
+            def __init__(self, cb):
+                super().__init__()
+                self._cb = cb
+            @java_method('(Landroid/media/MediaPlayer;)V')
+            def onCompletion(self, _mp):
+                self._cb()
+        _AndroidListenerClass = _Listener
+    return _AndroidListenerClass
+
+
 def _soap_request(host, port, method, **params):
     """
     Execute a SOAP 1.1 call and return the parsed XML root element.
@@ -894,26 +915,12 @@ class OwnlyApp(App):
     def _stream_android(self, url, label):
         """Android: play HTTP stream or local file via MediaPlayer."""
         try:
-            from jnius import autoclass, PythonJavaClass, java_method  # type: ignore
+            from jnius import autoclass  # type: ignore
             MediaPlayer = autoclass('android.media.MediaPlayer')
             mp = MediaPlayer()
 
-            # Use OnCompletionListener instead of polling isPlaying() —
-            # isPlaying() returns False briefly after start() during HTTP buffering,
-            # which caused the polling approach to skip tracks immediately.
-            class _Listener(PythonJavaClass):
-                __javainterfaces__ = ['android/media/MediaPlayer$OnCompletionListener']
-                __javacontext__ = 'app'
-
-                def __init__(inner, cb):
-                    super().__init__()
-                    inner._cb = cb
-
-                @java_method('(Landroid/media/MediaPlayer;)V')
-                def onCompletion(inner, _mp):
-                    inner._cb()
-
-            self._mp_listener = _Listener(
+            ListenerClass = _get_android_listener_class()
+            self._mp_listener = ListenerClass(
                 lambda: Clock.schedule_once(lambda _dt: self._auto_next())
             )
             mp.setOnCompletionListener(self._mp_listener)
@@ -926,17 +933,20 @@ class OwnlyApp(App):
 
     def _play_mediaplayer(self, mp, label):
         """Main-thread: start prepared MediaPlayer."""
-        if self._sound:
-            try:
-                self._sound.stop()
-                self._sound.release()
-            except Exception:
-                pass
-        self._sound = mp
-        mp.start()
-        self._root.ids.now_playing.text = f'> {label}'
-        self._root.ids.play_btn.text = '||'
-        self._start_progress_clock()
+        try:
+            if self._sound:
+                try:
+                    self._sound.stop()
+                    self._sound.release()
+                except Exception:
+                    pass
+            self._sound = mp
+            mp.start()
+            self._root.ids.now_playing.text = f'> {label}'
+            self._root.ids.play_btn.text = '||'
+            self._start_progress_clock()
+        except Exception as e:
+            self._on_play_error(str(e))
 
     def _start_progress_clock(self):
         self._stop_progress_clock()
