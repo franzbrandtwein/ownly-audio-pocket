@@ -926,7 +926,7 @@ class OwnlyApp(App):
     def _on_discover_fail(self):
         self._root.ids.now_playing.text = '❌ Kein Server gefunden (5 s Timeout)'
 
-
+    def _apply_android_insets(self, *_):
         from kivy.core.window import Window
         from kivy.metrics import dp
         sb = getattr(Window, 'statusbar_height', dp(28))
