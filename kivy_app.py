@@ -1093,13 +1093,37 @@ class OwnlyApp(App):
             url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
         if platform == 'android':
             # All MediaPlayer setup must run on main thread (needs Looper).
-            self._setup_mediaplayer(url, label)
+            # For HTTP URLs, download first via urllib (Python HTTP bypasses Android's
+            # cleartext traffic policy that blocks native MediaPlayer HTTP streaming).
+            if url.startswith('http'):
+                self._root.ids.now_playing.text = f'⏳ Lade {label} …'
+                threading.Thread(
+                    target=self._download_then_play_android,
+                    args=(url, label),
+                    daemon=True
+                ).start()
+            else:
+                self._setup_mediaplayer(url, label)
         else:
             threading.Thread(
                 target=self._fetch_and_play,
                 args=(url, label),
                 daemon=True
             ).start()
+
+    def _download_then_play_android(self, url, label):
+        """Android: download via urllib to temp file, then play locally via MediaPlayer."""
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+            tmp_path = tmp.name
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                while chunk := resp.read(65536):
+                    tmp.write(chunk)
+            tmp.close()
+            self._tmp_file = tmp_path
+            Clock.schedule_once(lambda _: self._setup_mediaplayer(tmp_path, label))
+        except Exception as e:
+            Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 
     def _setup_mediaplayer(self, url, label):
         """Main-thread: create MediaPlayer, attach listeners, start prepareAsync."""
