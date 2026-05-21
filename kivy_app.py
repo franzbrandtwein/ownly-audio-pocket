@@ -160,6 +160,8 @@ KV = """
 <TrackList>:
     bar_width: dp(4)
     bar_color: (.93, .4, .2, .8)
+    key_viewclass: 'viewclass'
+    key_size: 'height'
     RecycleBoxLayout:
         default_size: None, dp(54)
         default_size_hint: 1, None
