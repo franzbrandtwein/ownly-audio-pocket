@@ -12,6 +12,9 @@ source.exclude_dirs = music,dist,.certs,.github,__pycache__
 # p4a v2024.01.21 uses Python 3.11.5 and NDK r25b (stable, avoids 3.14 ABI)
 requirements = python3==3.11.5,kivy==2.3.0,android,jnius
 
+# ZXing barcode scanner bundled directly in APK (no opencv needed on Android)
+android.gradle_dependencies = com.journeyapps:zxing-android-embedded:4.3.0
+
 p4a.branch = v2024.01.21
 
 # ── Android ───────────────────────────────────────────────────────────────

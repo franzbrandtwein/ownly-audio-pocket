@@ -713,9 +713,39 @@ class OwnlyApp(App):
     # ── QR scan ──────────────────────────────────────────────────────────────
 
     def open_qr_scan(self):
-        """Open camera popup to scan the server panel QR code."""
-        popup = QRScanPopup(on_result=self._on_qr_scanned)
-        popup.open()
+        """Open QR scanner. On Android uses native ZXing intent, on desktop cv2 popup."""
+        if platform == 'android':
+            self._android_zxing_scan()
+        else:
+            popup = QRScanPopup(on_result=self._on_qr_scanned)
+            popup.open()
+
+    _QR_REQUEST_CODE = 0xC0DE
+
+    def _android_zxing_scan(self):
+        try:
+            from jnius import autoclass          # type: ignore
+            import android.activity              # type: ignore
+
+            PythonActivity   = autoclass('org.kivy.android.PythonActivity')
+            Intent           = autoclass('android.content.Intent')
+            CaptureActivity  = autoclass('com.journeyapps.barcodescanner.CaptureActivity')
+            IntentResult     = autoclass('com.journeyapps.barcodescanner.ScanIntegrator')
+
+            def on_result(req, result_code, intent):
+                android.activity.unbind(on_activity_result=on_result)
+                RESULT_OK = -1
+                if req == self._QR_REQUEST_CODE and result_code == RESULT_OK and intent:
+                    data = intent.getStringExtra('SCAN_RESULT')
+                    if data:
+                        Clock.schedule_once(lambda _dt: self._on_qr_scanned(data), 0)
+
+            android.activity.bind(on_activity_result=on_result)
+            intent = Intent(PythonActivity.mActivity, CaptureActivity)
+            intent.putExtra('SCAN_MODE', 'QR_CODE_MODE')
+            PythonActivity.mActivity.startActivityForResult(intent, self._QR_REQUEST_CODE)
+        except Exception as e:
+            self._root.ids.now_playing.text = f'QR-Fehler: {e}'
 
     def _on_qr_scanned(self, data):
         """
