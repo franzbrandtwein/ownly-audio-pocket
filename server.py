@@ -1113,12 +1113,27 @@ def start_soap_server():
     srv.serve_forever()
 
 
+def _udp_broadcast_loop():
+    """Broadcast 'OWNLY:<soap_port>' every 3 s so clients can auto-discover."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    msg = f'OWNLY:{SOAP_PORT}'.encode()
+    while True:
+        try:
+            sock.sendto(msg, ('<broadcast>', 8768))
+        except Exception:
+            pass
+        import time; time.sleep(3)
+
+
 def start_server():
     """Start all servers. Blocks until the main HTTPS server is stopped."""
     admin_httpd = http.server.HTTPServer(('0.0.0.0', ADMIN_PORT), AdminHandler)
     threading.Thread(target=admin_httpd.serve_forever, daemon=True).start()
 
     threading.Thread(target=start_soap_server, daemon=True).start()
+
+    threading.Thread(target=_udp_broadcast_loop, daemon=True).start()
 
     cert_file, key_file = ensure_cert()
     httpd = http.server.HTTPServer(('0.0.0.0', PORT), Handler)

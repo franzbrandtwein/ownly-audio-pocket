@@ -281,21 +281,30 @@ KV = """
             background_color: (.18, .18, .18, 1)
             foreground_color: (.9, .9, .9, 1)
             cursor_color: (1, .5, .2, 1)
-            size_hint_x: 0.55
+            size_hint_x: 0.45
             on_text_validate: app.connect(self.text)
+
+        Button:
+            text: 'Suchen'
+            font_size: dp(11)
+            size_hint_x: None
+            width: dp(52)
+            background_color: (.18, .18, .18, 1)
+            on_release: app.autodiscover()
 
         Button:
             text: 'QR'
             font_size: dp(13)
             size_hint_x: None
-            width: dp(42)
+            width: dp(38)
             background_color: (.18, .18, .18, 1)
             on_release: app.open_qr_scan()
 
         Button:
-            text: 'Verbinden'
+            text: 'OK'
             font_size: dp(12)
-            size_hint_x: 0.28
+            size_hint_x: None
+            width: dp(40)
             background_color: (.93, .4, .2, 1)
             on_release: app.connect(server_input.text)
 
@@ -857,7 +866,38 @@ class OwnlyApp(App):
         self._apply_active_marker()
         self._set_list_data(self._filtered)
 
-    def _apply_android_insets(self, *_):
+    def autodiscover(self):
+        """Listen for UDP broadcast from server, then connect automatically."""
+        self._root.ids.now_playing.text = '🔍 Suche Server …'
+        threading.Thread(target=self._do_autodiscover, daemon=True).start()
+
+    def _do_autodiscover(self):
+        import socket as _sock
+        try:
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+            s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+            s.bind(('', 8768))
+            s.settimeout(5.0)
+            data, addr = s.recvfrom(64)
+            s.close()
+            msg = data.decode().strip()          # 'OWNLY:8767'
+            if msg.startswith('OWNLY:'):
+                port = msg.split(':')[1]
+                host_str = f'{addr[0]}:{port}'
+                Clock.schedule_once(lambda _: self._on_discovered(host_str))
+            else:
+                Clock.schedule_once(lambda _: self._on_discover_fail())
+        except Exception:
+            Clock.schedule_once(lambda _: self._on_discover_fail())
+
+    def _on_discovered(self, host_str):
+        self._root.ids.server_input.text = host_str
+        self.connect(host_str)
+
+    def _on_discover_fail(self):
+        self._root.ids.now_playing.text = '❌ Kein Server gefunden (5 s Timeout)'
+
+
         from kivy.core.window import Window
         from kivy.metrics import dp
         sb = getattr(Window, 'statusbar_height', dp(28))
