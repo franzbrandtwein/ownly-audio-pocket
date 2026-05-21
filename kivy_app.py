@@ -43,55 +43,38 @@ from kivy.utils import platform
 _SOAP_NS   = 'http://ownly.audio/soap'
 _SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
 
-# Android MediaPlayer listener classes — each defined once (jnius registers
-# a Java proxy class by Python class name; redefining causes crashes).
-_AndroidCompletionListenerClass = None
-_AndroidPreparedListenerClass   = None
-_AndroidErrorListenerClass      = None
+# Android ExoPlayer listener — defined once (jnius singleton pattern).
+_ExoListenerClass = None
 
-def _get_android_listener_classes():
-    global _AndroidCompletionListenerClass, _AndroidPreparedListenerClass, \
-           _AndroidErrorListenerClass
-    if _AndroidCompletionListenerClass is None:
+def _get_exo_listener_class():
+    global _ExoListenerClass
+    if _ExoListenerClass is None:
         from jnius import PythonJavaClass, java_method  # type: ignore
 
-        class _CompletionListener(PythonJavaClass):
-            __javainterfaces__ = ['android/media/MediaPlayer$OnCompletionListener']
+        class _ExoListener(PythonJavaClass):
+            __javainterfaces__ = ['androidx/media3/common/Player$Listener']
             __javacontext__ = 'app'
-            def __init__(self, cb):
-                super().__init__()
-                self._cb = cb
-            @java_method('(Landroid/media/MediaPlayer;)V')
-            def onCompletion(self, _mp):
-                self._cb()
 
-        class _PreparedListener(PythonJavaClass):
-            __javainterfaces__ = ['android/media/MediaPlayer$OnPreparedListener']
-            __javacontext__ = 'app'
-            def __init__(self, cb):
+            def __init__(self, on_ended, on_error):
                 super().__init__()
-                self._cb = cb
-            @java_method('(Landroid/media/MediaPlayer;)V')
-            def onPrepared(self, _mp):
-                self._cb()
+                self._on_ended = on_ended
+                self._on_error = on_error
 
-        class _ErrorListener(PythonJavaClass):
-            __javainterfaces__ = ['android/media/MediaPlayer$OnErrorListener']
-            __javacontext__ = 'app'
-            def __init__(self, cb):
-                super().__init__()
-                self._cb = cb
-            @java_method('(Landroid/media/MediaPlayer;II)Z')
-            def onError(self, _mp, what, extra):
-                self._cb(what, extra)
-                return True   # True = error handled, suppress OnCompletion
+            @java_method('(I)V')
+            def onPlaybackStateChanged(self, state):
+                if state == 4:   # Player.STATE_ENDED
+                    self._on_ended()
 
-        _AndroidCompletionListenerClass = _CompletionListener
-        _AndroidPreparedListenerClass   = _PreparedListener
-        _AndroidErrorListenerClass      = _ErrorListener
-    return (_AndroidCompletionListenerClass,
-            _AndroidPreparedListenerClass,
-            _AndroidErrorListenerClass)
+            @java_method('(Landroidx/media3/common/PlaybackException;)V')
+            def onPlayerError(self, error):
+                try:
+                    msg = f'ExoPlayer Fehler {error.errorCode}'
+                except Exception:
+                    msg = 'ExoPlayer Fehler'
+                self._on_error(msg)
+
+        _ExoListenerClass = _ExoListener
+    return _ExoListenerClass
 
 
 def _soap_request(host, port, method, **params):
@@ -1103,7 +1086,7 @@ class OwnlyApp(App):
                     daemon=True
                 ).start()
             else:
-                self._setup_mediaplayer(url, label)
+                Clock.schedule_once(lambda _: self._setup_exoplayer(url, label))
         else:
             threading.Thread(
                 target=self._fetch_and_play,
@@ -1112,7 +1095,7 @@ class OwnlyApp(App):
             ).start()
 
     def _download_then_play_android(self, url, label):
-        """Android: download via urllib to temp file, then play locally via MediaPlayer."""
+        """Android: download via urllib to temp file, then play locally via ExoPlayer."""
         try:
             tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
             tmp_path = tmp.name
@@ -1121,50 +1104,40 @@ class OwnlyApp(App):
                     tmp.write(chunk)
             tmp.close()
             self._tmp_file = tmp_path
-            Clock.schedule_once(lambda _: self._setup_mediaplayer(tmp_path, label))
+            Clock.schedule_once(lambda _: self._setup_exoplayer(tmp_path, label))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 
-    def _setup_mediaplayer(self, url, label):
-        """Main-thread: create MediaPlayer, attach listeners, start prepareAsync."""
+    def _setup_exoplayer(self, url, label):
+        """Main-thread: create ExoPlayer, attach listener, prepare and play."""
         try:
             from jnius import autoclass  # type: ignore
-            MediaPlayer = autoclass('android.media.MediaPlayer')
-            mp = MediaPlayer()
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
+            MediaItem = autoclass('androidx.media3.common.MediaItem')
 
-            CompClass, PrepClass, ErrClass = _get_android_listener_classes()
-
-            self._mp_listener = CompClass(
-                lambda: Clock.schedule_once(lambda _dt: self._auto_next())
-            )
-            self._mp_prepared = PrepClass(
-                lambda: Clock.schedule_once(lambda _dt: self._play_mediaplayer(mp, label))
-            )
-            self._mp_error = ErrClass(
-                lambda what, extra: Clock.schedule_once(
-                    lambda _dt: self._on_play_error(f'MediaPlayer Fehler {what}/{extra}')
-                )
-            )
-
-            mp.setOnCompletionListener(self._mp_listener)
-            mp.setOnPreparedListener(self._mp_prepared)
-            mp.setOnErrorListener(self._mp_error)
-            mp.setDataSource(url)
-            mp.prepareAsync()   # non-blocking — fires OnPreparedListener when ready
-        except Exception as e:
-            self._on_play_error(str(e))
-
-    def _play_mediaplayer(self, mp, label):
-        """Main-thread: start prepared MediaPlayer."""
-        try:
-            if self._sound:
+            if self._sound is not None:
                 try:
-                    self._sound.stop()
                     self._sound.release()
                 except Exception:
                     pass
-            self._sound = mp
-            mp.start()
+                self._sound = None
+
+            player = ExoPlayerBuilder(PythonActivity.mActivity).build()
+
+            ExoListenerClass = _get_exo_listener_class()
+            self._mp_listener = ExoListenerClass(
+                on_ended=lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
+                on_error=lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
+            )
+            player.addListener(self._mp_listener)
+
+            media_url = f'file://{url}' if url.startswith('/') else url
+            player.setMediaItem(MediaItem.fromUri(media_url))
+            player.prepare()
+            player.play()   # playWhenReady=true → plays as soon as buffered
+
+            self._sound = player
             self._root.ids.now_playing.text = f'> {label}'
             self._root.ids.play_btn.text = '||'
             self._start_progress_clock()
@@ -1181,13 +1154,13 @@ class OwnlyApp(App):
             self._progress_clock = None
 
     def _update_progress(self, dt):
-        mp = self._sound
-        if mp is None:
+        player = self._sound
+        if player is None:
             self._stop_progress_clock()
             return
         try:
-            pos = mp.getCurrentPosition()   # ms
-            dur = mp.getDuration()          # ms  (-1 if unknown)
+            pos = player.getCurrentPosition()   # ms
+            dur = player.getDuration()          # ms  (negative if unknown)
             if dur > 0:
                 self._root.ids.progress_bar.value = int(pos * 1000 / dur)
                 self._root.ids.time_label.text = (
@@ -1254,24 +1227,15 @@ class OwnlyApp(App):
             nxt = self._filtered[(cur_pos + 1) % len(self._filtered)]
         self.play_idx(nxt['idx'])
 
-    def _is_mp_playing(self):
-        """True if current sound is an Android MediaPlayer and currently playing."""
-        try:
-            from jnius import autoclass  # type: ignore
-            MediaPlayer = autoclass('android.media.MediaPlayer')
-            return isinstance(self._sound, MediaPlayer) and self._sound.isPlaying()
-        except Exception:
-            return False
-
-    def _mp_pause_resume(self):
-        """Pause or resume Android MediaPlayer."""
+    def _exo_pause_resume(self):
+        """Pause or resume ExoPlayer."""
         try:
             if self._sound.isPlaying():
                 self._sound.pause()
                 self._stop_progress_clock()
                 self._root.ids.play_btn.text = '>'
             else:
-                self._sound.start()
+                self._sound.play()
                 self._start_progress_clock()
                 self._root.ids.play_btn.text = '||'
         except Exception as e:
@@ -1281,15 +1245,9 @@ class OwnlyApp(App):
         if not self._sound:
             return
         if platform == 'android':
-            try:
-                from jnius import autoclass  # type: ignore
-                MediaPlayer = autoclass('android.media.MediaPlayer')
-                if isinstance(self._sound, MediaPlayer):
-                    self._mp_pause_resume()
-                    return
-            except Exception:
-                pass
-        # Kivy SoundLoader path
+            self._exo_pause_resume()
+            return
+        # Kivy SoundLoader path (desktop)
         if self._sound.state == 'play':
             self._sound.stop()
             self._root.ids.play_btn.text = '>'

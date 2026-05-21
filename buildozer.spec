@@ -17,7 +17,7 @@ requirements = python3==3.11.5,kivy==2.3.0,android,jnius
 # ZXing barcode scanner bundled directly in APK (no opencv needed on Android)
 # v3.6.0: CaptureActivity extends Activity (not AppCompatActivity) → Kivy-compatible
 # v4.x broke this by requiring AppCompat theme context → crashes on launch
-android.gradle_dependencies = com.journeyapps:zxing-android-embedded:3.6.0
+android.gradle_dependencies = com.journeyapps:zxing-android-embedded:3.6.0, androidx.media3:media3-exoplayer:1.3.1
 
 p4a.branch = v2024.01.21
 
