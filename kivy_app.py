@@ -86,8 +86,8 @@ KV = """
 <TrackRow>:
     size_hint_y: None
     height: dp(54)
-    padding: dp(20), dp(6), dp(12), dp(6)
-    spacing: dp(0)
+    padding: dp(20), dp(6), dp(4), dp(6)
+    spacing: dp(4)
     orientation: 'horizontal'
     canvas.before:
         Color:
@@ -109,6 +109,15 @@ KV = """
         text_size: self.size
         color: (1, .7, .25, 1) if root.is_active else (.95, .95, .95, 1)
         bold: root.is_active
+
+    Button:
+        size_hint_x: None
+        width: dp(34)
+        text: '✓' if root.is_cached else '⬇'
+        font_size: dp(14)
+        background_color: 0, 0, 0, 0
+        color: (.3, .9, .3, 1) if root.is_cached else (.45, .45, .45, 1)
+        on_release: app.download_track_by_id(root.idx, root.track_id)
 
 <BandHeader>:
     size_hint_y: None
@@ -139,7 +148,7 @@ KV = """
 <AlbumHeader>:
     size_hint_y: None
     height: dp(30)
-    padding: dp(22), dp(2), dp(12), dp(2)
+    padding: dp(22), dp(2), dp(6), dp(2)
     orientation: 'horizontal'
     canvas.before:
         Color:
@@ -156,6 +165,15 @@ KV = """
         text_size: self.size
         color: (.55, .55, .55, 1)
         italic: True
+
+    Button:
+        size_hint_x: None
+        width: dp(34)
+        text: '✓' if root.album_cached else '⬇'
+        font_size: dp(12)
+        background_color: 0, 0, 0, 0
+        color: (.3, .9, .3, 1) if root.album_cached else (.45, .45, .45, 1)
+        on_release: app.download_album(root.album)
 
 <TrackList>:
     bar_width: dp(4)
@@ -227,17 +245,29 @@ KV = """
             width: dp(20)
             font_size: dp(16)
 
-    # ── Search ──────────────────────────────────────────────────────────────
-    TextInput:
-        id: search_input
-        hint_text: 'Suchen …'
-        font_size: dp(13)
-        multiline: False
-        background_color: (.13, .13, .13, 1)
-        foreground_color: (.9, .9, .9, 1)
+    # ── Search + offline filter ─────────────────────────────────────────────
+    BoxLayout:
         size_hint_y: None
         height: dp(36)
-        on_text: app.filter_tracks(self.text)
+        spacing: dp(4)
+        padding: 0
+        TextInput:
+            id: search_input
+            hint_text: 'Suchen …'
+            font_size: dp(13)
+            multiline: False
+            background_color: (.13, .13, .13, 1)
+            foreground_color: (.9, .9, .9, 1)
+            on_text: app.filter_tracks(self.text)
+        Button:
+            id: offline_btn
+            text: '📵'
+            size_hint_x: None
+            width: dp(40)
+            font_size: dp(15)
+            background_color: (.13, .13, .13, 1)
+            color: (.45, .45, .45, 1)
+            on_release: app.toggle_offline_filter()
 
     # ── Track list ───────────────────────────────────────────────────────────
     TrackList:
@@ -318,6 +348,7 @@ class TrackRow(RecycleDataViewBehavior, BoxLayout):
     album    = StringProperty('')
     genre    = StringProperty('')
     is_active = BooleanProperty(False)
+    is_cached = BooleanProperty(False)
 
     def refresh_view_attrs(self, rv, index, data):
         self.idx      = data.get('idx', 0)
@@ -327,13 +358,16 @@ class TrackRow(RecycleDataViewBehavior, BoxLayout):
         self.album    = data.get('album', '')
         self.genre    = data.get('genre', '')
         self.is_active = data.get('is_active', False)
+        self.is_cached = data.get('is_cached', False)
         return super().refresh_view_attrs(rv, index, data)
 
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
+            if super().on_touch_down(touch):
+                return True
             App.get_running_app().play_idx(self.idx)
             return True
-        return super().on_touch_down(touch)
+        return False
 
 
 class BandHeader(RecycleDataViewBehavior, BoxLayout):
@@ -345,10 +379,12 @@ class BandHeader(RecycleDataViewBehavior, BoxLayout):
 
 
 class AlbumHeader(RecycleDataViewBehavior, BoxLayout):
-    album = StringProperty('')
+    album        = StringProperty('')
+    album_cached = BooleanProperty(False)
 
     def refresh_view_attrs(self, rv, index, data):
-        self.album = data.get('album', '')
+        self.album        = data.get('album', '')
+        self.album_cached = data.get('album_cached', False)
         return super().refresh_view_attrs(rv, index, data)
 
 
@@ -576,8 +612,11 @@ class OwnlyApp(App):
         self._server_host    = ''
         self._soap_port      = 8767
         self._tmp_file       = None
+        self._cached_ids     = set()
+        self._offline_only   = False
 
         Clock.schedule_once(self._load_saved_host, 0)
+        Clock.schedule_once(self._load_cached_ids, 0)
         return self._root
 
     def _host_file(self):
@@ -600,7 +639,83 @@ class OwnlyApp(App):
         except Exception:
             pass
 
-    def _apply_android_insets(self, dt):
+    # ── Offline cache ────────────────────────────────────────────────────────
+
+    def _cache_dir(self):
+        d = os.path.join(self.user_data_dir, 'tracks')
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _cache_path(self, track_id):
+        return os.path.join(self._cache_dir(), str(track_id))
+
+    def _load_cached_ids(self, *_):
+        d = os.path.join(self.user_data_dir, 'tracks')
+        if os.path.isdir(d):
+            self._cached_ids = {
+                f for f in os.listdir(d)
+                if os.path.getsize(os.path.join(d, f)) > 0
+            }
+        else:
+            self._cached_ids = set()
+
+    def download_track_by_id(self, idx, track_id):
+        if not track_id or track_id in self._cached_ids:
+            return
+        threading.Thread(
+            target=self._do_download, args=(idx, track_id), daemon=True
+        ).start()
+
+    def _do_download(self, idx, track_id):
+        url  = f'http://{self._server_host}:{self._soap_port}/audio/{idx}'
+        dest = self._cache_path(track_id)
+        tmp  = dest + '.tmp'
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            os.rename(tmp, dest)
+            self._cached_ids.add(track_id)
+            Clock.schedule_once(lambda _: self._refresh_cache_markers())
+        except Exception as e:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            Clock.schedule_once(
+                lambda _: setattr(self._root.ids.now_playing, 'text',
+                                  f'❌ Download: {e}'))
+
+    def download_album(self, album):
+        for t in self._all_tracks:
+            if t['album'] == album and t['track_id'] not in self._cached_ids:
+                self.download_track_by_id(t['idx'], t['track_id'])
+
+    def _refresh_cache_markers(self):
+        self._set_list_data(self._filtered)
+
+    def toggle_offline_filter(self):
+        self._offline_only = not self._offline_only
+        self._root.ids.offline_btn.color = (
+            (.3, .9, .3, 1) if self._offline_only else (.45, .45, .45, 1)
+        )
+        self._apply_filters()
+
+    def _apply_filters(self):
+        q = self._root.ids.search_input.text.lower().strip()
+        result = self._all_tracks
+        if q:
+            result = [
+                t for t in result
+                if q in t['title'].lower()
+                or q in t['band'].lower()
+                or q in t['album'].lower()
+            ]
+        if self._offline_only:
+            result = [t for t in result if t['track_id'] in self._cached_ids]
+        self._filtered = result
+        self._apply_active_marker()
+        self._set_list_data(self._filtered)
+
+
         from kivy.core.window import Window
         from kivy.metrics import dp
         sb = getattr(Window, 'statusbar_height', dp(28))
@@ -650,11 +765,22 @@ class OwnlyApp(App):
 
         result = []
         for band, albums in grouped.items():
-            result.append({'viewclass': 'BandHeader',  'band': band,  'height': dp(38)})
+            result.append({'viewclass': 'BandHeader', 'band': band, 'height': dp(38)})
             for album, album_tracks in albums.items():
-                result.append({'viewclass': 'AlbumHeader', 'album': album, 'height': dp(30)})
+                album_cached = bool(album_tracks) and all(
+                    t.get('track_id') in self._cached_ids for t in album_tracks
+                )
+                result.append({
+                    'viewclass': 'AlbumHeader', 'album': album,
+                    'height': dp(30), 'album_cached': album_cached,
+                })
                 for t in album_tracks:
-                    result.append(dict(t, viewclass='TrackRow', height=dp(54)))
+                    result.append(dict(
+                        t,
+                        viewclass='TrackRow',
+                        height=dp(54),
+                        is_cached=(t.get('track_id') in self._cached_ids),
+                    ))
         return result
 
     def _set_list_data(self, tracks):
@@ -678,18 +804,7 @@ class OwnlyApp(App):
     # ── Search / filter ─────────────────────────────────────────────────────
 
     def filter_tracks(self, query):
-        q = query.lower().strip()
-        if q:
-            self._filtered = [
-                t for t in self._all_tracks
-                if q in t['title'].lower()
-                or q in t['band'].lower()
-                or q in t['album'].lower()
-            ]
-        else:
-            self._filtered = list(self._all_tracks)
-        self._apply_active_marker()
-        self._set_list_data(self._filtered)
+        self._apply_filters()
 
     # ── Playback ─────────────────────────────────────────────────────────────
 
@@ -724,7 +839,12 @@ class OwnlyApp(App):
                 pass
             self._tmp_file = None
 
-        url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
+        # Use local cached file if available, otherwise stream from server
+        local_path = self._cache_path(track.get('track_id', ''))
+        if track.get('track_id') and os.path.isfile(local_path):
+            url = local_path
+        else:
+            url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
         if platform == 'android':
             # Stream URL directly via Android MediaPlayer — no temp file, no blocking load()
             threading.Thread(
