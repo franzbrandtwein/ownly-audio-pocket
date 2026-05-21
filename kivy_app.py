@@ -13,6 +13,8 @@ import threading
 import tempfile
 import os
 import re
+import time
+import json
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
@@ -250,27 +252,45 @@ KV = """
             size: dp(12), dp(12)
 
 <ConnectionsPopup>:
-    title: 'Verbindung'
-    size_hint: .92, None
-    height: dp(190)
+    title: 'Verbindungen'
+    size_hint: .92, .72
     auto_dismiss: True
     BoxLayout:
         orientation: 'vertical'
-        spacing: dp(10)
-        padding: dp(12)
-        TextInput:
-            id: host_input
-            hint_text: 'Server IP:Port'
-            font_size: dp(14)
-            multiline: False
-            background_color: (.18, .18, .18, 1)
-            foreground_color: (.9, .9, .9, 1)
-            cursor_color: (1, .5, .2, 1)
-            on_text_validate: app.connect(self.text); root.dismiss()
+        spacing: dp(8)
+        padding: dp(10)
+        ScrollView:
+            size_hint_y: 1
+            BoxLayout:
+                id: servers_list
+                orientation: 'vertical'
+                size_hint_y: None
+                height: self.minimum_height
+                spacing: dp(4)
         BoxLayout:
             size_hint_y: None
-            height: dp(44)
-            spacing: dp(8)
+            height: dp(40)
+            spacing: dp(6)
+            TextInput:
+                id: host_input
+                hint_text: 'IP:Port manuell eingeben'
+                font_size: dp(13)
+                multiline: False
+                background_color: (.18, .18, .18, 1)
+                foreground_color: (.9, .9, .9, 1)
+                cursor_color: (1, .5, .2, 1)
+                on_text_validate: app.connect(self.text); root.dismiss()
+            Button:
+                text: 'Verbinden'
+                size_hint_x: None
+                width: dp(90)
+                font_size: dp(12)
+                background_color: (.93, .4, .2, 1)
+                on_release: app.connect(host_input.text); root.dismiss()
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            spacing: dp(6)
             Button:
                 text: 'Suchen'
                 font_size: dp(13)
@@ -283,11 +303,6 @@ KV = """
                 width: dp(52)
                 background_color: (.18, .18, .18, 1)
                 on_release: app.open_qr_scan(); root.dismiss()
-            Button:
-                text: 'Verbinden'
-                font_size: dp(13)
-                background_color: (.93, .4, .2, 1)
-                on_release: app.connect(host_input.text); root.dismiss()
 
 <OwnlyRoot>:
     orientation: 'vertical'
@@ -780,8 +795,10 @@ class OwnlyApp(App):
         self._expanded_bands  = set()
         self._expanded_albums = set()
         self._current_addr   = ''
+        self._servers        = []   # list of {'addr': '...'} dicts
         self._conn_popup     = None
 
+        Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_saved_host, 0)
         Clock.schedule_once(self._load_cached_ids, 0)
         return self._root
@@ -789,6 +806,72 @@ class OwnlyApp(App):
     def _host_file(self):
         import os
         return os.path.join(self.user_data_dir, 'last_host.txt')
+
+    def _servers_file(self):
+        return os.path.join(self.user_data_dir, 'servers.json')
+
+    def _load_servers(self, *_):
+        try:
+            with open(self._servers_file()) as f:
+                self._servers = json.load(f)
+        except Exception:
+            self._servers = []
+
+    def _save_servers(self):
+        try:
+            with open(self._servers_file(), 'w') as f:
+                json.dump(self._servers, f)
+        except Exception:
+            pass
+
+    def _add_server(self, addr):
+        addr = addr.strip()
+        if addr and not any(s['addr'] == addr for s in self._servers):
+            self._servers.append({'addr': addr})
+            self._save_servers()
+
+    def _remove_server(self, addr):
+        self._servers = [s for s in self._servers if s['addr'] != addr]
+        self._save_servers()
+        if self._conn_popup:
+            self._populate_servers_list()
+
+    def _populate_servers_list(self):
+        from kivy.uix.boxlayout import BoxLayout as _BL
+        from kivy.uix.button import Button as _Btn
+        from kivy.uix.label import Label as _Lbl
+        from kivy.metrics import dp as _dp
+        sl = self._conn_popup.ids.servers_list
+        sl.clear_widgets()
+        if not self._servers:
+            sl.add_widget(_Lbl(
+                text='Keine Server bekannt. Suchen oder manuell eingeben.',
+                font_size=_dp(12), color=(.5, .5, .5, 1),
+                size_hint_y=None, height=_dp(40),
+                halign='center', valign='middle',
+            ))
+            return
+        for srv in self._servers:
+            addr = srv['addr']
+            row = _BL(size_hint_y=None, height=_dp(44), spacing=_dp(6))
+            is_active = (addr == self._current_addr)
+            conn_btn = _Btn(
+                text=addr,
+                font_size=_dp(13),
+                background_color=(.93, .4, .2, 1) if is_active else (.18, .18, .18, 1),
+            )
+            conn_btn.bind(on_release=lambda b, a=addr: (
+                self._conn_popup.dismiss(),
+                self.connect(a),
+            ))
+            rem_btn = _Btn(
+                text='x', size_hint_x=None, width=_dp(38),
+                font_size=_dp(13), background_color=(.35, .1, .1, 1),
+            )
+            rem_btn.bind(on_release=lambda b, a=addr: self._remove_server(a))
+            row.add_widget(conn_btn)
+            row.add_widget(rem_btn)
+            sl.add_widget(row)
 
     def _load_saved_host(self, *_):
         try:
@@ -922,29 +1005,47 @@ class OwnlyApp(App):
         threading.Thread(target=self._do_autodiscover, daemon=True).start()
 
     def _do_autodiscover(self):
+        """Listen for UDP broadcasts for up to 4 seconds, collect all unique servers."""
         import socket as _sock
+        found = {}
         try:
             s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
             s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
             s.bind(('', 8768))
-            s.settimeout(5.0)
-            data, addr = s.recvfrom(64)
+            s.settimeout(1.0)
+            deadline = time.time() + 4.0
+            while time.time() < deadline:
+                try:
+                    data, addr = s.recvfrom(64)
+                    msg = data.decode().strip()
+                    if msg.startswith('OWNLY:'):
+                        port = msg.split(':')[1]
+                        found[f'{addr[0]}:{port}'] = True
+                except _sock.timeout:
+                    pass
             s.close()
-            msg = data.decode().strip()          # 'OWNLY:8767'
-            if msg.startswith('OWNLY:'):
-                port = msg.split(':')[1]
-                host_str = f'{addr[0]}:{port}'
-                Clock.schedule_once(lambda _: self._on_discovered(host_str))
-            else:
-                Clock.schedule_once(lambda _: self._on_discover_fail())
         except Exception:
+            pass
+        if found:
+            hosts = list(found.keys())
+            Clock.schedule_once(lambda _: self._on_discovered_multi(hosts))
+        else:
             Clock.schedule_once(lambda _: self._on_discover_fail())
 
-    def _on_discovered(self, host_str):
-        self._current_addr = host_str
-        if self._conn_popup and self._conn_popup._is_open:
-            self._conn_popup.ids.host_input.text = host_str
-        self.connect(host_str)
+    def _on_discovered_multi(self, hosts):
+        for h in hosts:
+            self._add_server(h)
+        if self._conn_popup:
+            self._populate_servers_list()
+        if not self._current_addr:
+            # Auto-connect to first found server if not yet connected
+            self.connect(hosts[0])
+        else:
+            n = len(hosts)
+            label = 'Server' if n == 1 else 'Server'
+            self._root.ids.now_playing.text = (
+                f'{n} {label} gefunden — im Menu wechseln.'
+            )
 
     def _on_discover_fail(self):
         self._root.ids.now_playing.text = '❌ Kein Server gefunden (5 s Timeout)'
@@ -959,7 +1060,10 @@ class OwnlyApp(App):
 
     def connect(self, addr):
         addr = addr.strip()
+        if not addr:
+            return
         self._current_addr = addr
+        self._add_server(addr)
         if ':' in addr:
             host, port = addr.rsplit(':', 1)
             self._server_host = host
@@ -1317,7 +1421,8 @@ class OwnlyApp(App):
     def open_connections(self):
         if self._conn_popup is None:
             self._conn_popup = ConnectionsPopup()
-        self._conn_popup.ids.host_input.text = self._current_addr
+        self._conn_popup.ids.host_input.text = ''
+        self._populate_servers_list()
         self._conn_popup.open()
 
     def open_qr_scan(self):
@@ -1386,7 +1491,6 @@ class OwnlyApp(App):
             return
         host = m.group(1)
         addr = f'{host}:8767'
-        self._current_addr = addr
         self.connect(addr)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
