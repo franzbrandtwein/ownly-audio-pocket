@@ -820,9 +820,8 @@ class OwnlyApp(App):
             from jnius import autoclass          # type: ignore
             from android import activity as _act # type: ignore
 
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Intent         = autoclass('android.content.Intent')
-            ComponentName  = autoclass('android.content.ComponentName')
+            PythonActivity    = autoclass('org.kivy.android.PythonActivity')
+            IntentIntegrator  = autoclass('com.journeyapps.barcodescanner.IntentIntegrator')
 
             def on_result(req, result_code, intent_data):
                 _act.unbind(on_activity_result=on_result)
@@ -832,13 +831,12 @@ class OwnlyApp(App):
                         Clock.schedule_once(lambda _dt: self._on_qr_scanned(data), 0)
 
             _act.bind(on_activity_result=on_result)
-            pkg    = PythonActivity.mActivity.getPackageName()
-            intent = Intent()
-            intent.setComponent(ComponentName(
-                pkg,
-                'com.journeyapps.barcodescanner.CaptureActivity'
-            ))
-            PythonActivity.mActivity.startActivityForResult(intent, 49374)
+            integrator = IntentIntegrator(PythonActivity.mActivity)
+            integrator.setDesiredBarcodeFormats('QR_CODE')
+            integrator.setPrompt('QR Code scannen')
+            integrator.setBeepEnabled(False)
+            scan_intent = integrator.createScanIntent()
+            PythonActivity.mActivity.startActivityForResult(scan_intent, 49374)
         except Exception as e:
             self._root.ids.now_playing.text = f'QR: {e}'
 
