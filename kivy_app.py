@@ -380,16 +380,18 @@ KV = """
                 points: self.x, self.top, self.x + self.width, self.top
                 width: 1
 
-        Label:
+        TextInput:
             id: now_playing
             text: '— nichts ausgewählt —'
             font_size: dp(12)
-            color: (.75, .75, .75, 1)
+            foreground_color: (.75, .75, .75, 1)
+            background_color: (0, 0, 0, 0)
             size_hint_y: None
-            height: dp(20)
+            height: dp(24)
+            readonly: True
+            multiline: False
             halign: 'center'
-            valign: 'middle'
-            text_size: self.size
+            padding: dp(4), dp(2)
 
         # ── Progress ───────────────────────────────────────────────────────
         BoxLayout:
