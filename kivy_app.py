@@ -113,7 +113,7 @@ KV = """
     Button:
         size_hint_x: None
         width: dp(34)
-        text: '✓' if root.is_cached else '⬇'
+        text: '✓' if root.is_cached else '↓'
         font_size: dp(14)
         background_color: 0, 0, 0, 0
         color: (.3, .9, .3, 1) if root.is_cached else (.45, .45, .45, 1)
@@ -169,7 +169,7 @@ KV = """
     Button:
         size_hint_x: None
         width: dp(34)
-        text: '✓' if root.album_cached else '⬇'
+        text: '✓' if root.album_cached else '↓'
         font_size: dp(12)
         background_color: 0, 0, 0, 0
         color: (.3, .9, .3, 1) if root.album_cached else (.45, .45, .45, 1)
@@ -261,10 +261,10 @@ KV = """
             on_text: app.filter_tracks(self.text)
         Button:
             id: offline_btn
-            text: '📵'
+            text: 'Off'
             size_hint_x: None
             width: dp(40)
-            font_size: dp(15)
+            font_size: dp(11)
             background_color: (.13, .13, .13, 1)
             color: (.45, .45, .45, 1)
             on_release: app.toggle_offline_filter()
