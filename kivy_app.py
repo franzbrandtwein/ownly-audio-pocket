@@ -860,13 +860,34 @@ class OwnlyApp(App):
             ).start()
 
     def _stream_android(self, url, label):
-        """Android: play HTTP stream via MediaPlayer directly (no full download needed)."""
+        """Android: play HTTP stream or local file via MediaPlayer."""
         try:
-            from jnius import autoclass  # type: ignore
+            from jnius import autoclass, PythonJavaClass, java_method  # type: ignore
             MediaPlayer = autoclass('android.media.MediaPlayer')
             mp = MediaPlayer()
+
+            # Use OnCompletionListener instead of polling isPlaying() —
+            # isPlaying() returns False briefly after start() during HTTP buffering,
+            # which caused the polling approach to skip tracks immediately.
+            class _Listener(PythonJavaClass):
+                __javainterfaces__ = ['android/media/MediaPlayer$OnCompletionListener']
+                __javacontext__ = 'app'
+
+                def __init__(inner, cb):
+                    super().__init__()
+                    inner._cb = cb
+
+                @java_method('(Landroid/media/MediaPlayer;)V')
+                def onCompletion(inner, _mp):
+                    inner._cb()
+
+            self._mp_listener = _Listener(
+                lambda: Clock.schedule_once(lambda _dt: self._auto_next())
+            )
+            mp.setOnCompletionListener(self._mp_listener)
+
             mp.setDataSource(url)
-            mp.prepare()           # blocking but in background thread → no ANR
+            mp.prepare()   # blocking, in background thread → no ANR
             Clock.schedule_once(lambda _: self._play_mediaplayer(mp, label))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
@@ -883,23 +904,6 @@ class OwnlyApp(App):
         mp.start()
         self._root.ids.now_playing.text = f'> {label}'
         self._root.ids.play_btn.text = '||'
-        # Poll for completion (MediaPlayer has no easy Python callback)
-        Clock.schedule_interval(self._check_mp_done, 1.0)
-
-    def _check_mp_done(self, dt):
-        mp = self._sound
-        if mp is None:
-            return False  # unschedule
-        try:
-            from jnius import autoclass  # type: ignore
-            MediaPlayer = autoclass('android.media.MediaPlayer')
-            if not isinstance(mp, MediaPlayer):
-                return False
-            if not mp.isPlaying():
-                Clock.schedule_once(lambda _: self._auto_next())
-                return False  # unschedule
-        except Exception:
-            return False
 
     def _fetch_and_play(self, url, label):
         """Desktop: download to temp file, then load and play."""
