@@ -820,8 +820,9 @@ class OwnlyApp(App):
             from jnius import autoclass          # type: ignore
             from android import activity as _act # type: ignore
 
-            PythonActivity    = autoclass('org.kivy.android.PythonActivity')
-            IntentIntegrator  = autoclass('com.journeyapps.barcodescanner.IntentIntegrator')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent         = autoclass('android.content.Intent')
+            ComponentName  = autoclass('android.content.ComponentName')
 
             def on_result(req, result_code, intent_data):
                 _act.unbind(on_activity_result=on_result)
@@ -831,14 +832,17 @@ class OwnlyApp(App):
                         Clock.schedule_once(lambda _dt: self._on_qr_scanned(data), 0)
 
             _act.bind(on_activity_result=on_result)
-            integrator = IntentIntegrator(PythonActivity.mActivity)
-            integrator.setDesiredBarcodeFormats('QR_CODE')
-            integrator.setPrompt('QR Code scannen')
-            integrator.setBeepEnabled(False)
-            scan_intent = integrator.createScanIntent()
-            PythonActivity.mActivity.startActivityForResult(scan_intent, 49374)
+            pkg    = PythonActivity.mActivity.getPackageName()
+            intent = Intent('com.google.zxing.client.android.SCAN')
+            intent.setComponent(ComponentName(
+                pkg, 'com.journeyapps.barcodescanner.CaptureActivity'
+            ))
+            intent.putExtra('SCAN_FORMATS', 'QR_CODE')
+            intent.putExtra('SAVE_HISTORY', False)
+            PythonActivity.mActivity.startActivityForResult(intent, 49374)
         except Exception as e:
-            self._root.ids.now_playing.text = f'QR: {e}'
+            # Show full error so it's readable
+            self._root.ids.now_playing.text = str(e)[:120]
 
     def _on_qr_scanned(self, data):
         """
