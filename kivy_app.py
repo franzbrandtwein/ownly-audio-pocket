@@ -837,8 +837,22 @@ class OwnlyApp(App):
         url  = f'http://{self._server_host}:{self._soap_port}/audio/{idx}'
         dest = self._cache_path(track_id)
         tmp  = dest + '.tmp'
+        # look up title for status display
+        title = next((t['title'] for t in self._all_tracks if t['track_id'] == track_id), str(idx))
         try:
-            urllib.request.urlretrieve(url, tmp)
+            resp = urllib.request.urlopen(url, timeout=60)
+            total = int(resp.headers.get('Content-Length', 0))
+            downloaded = 0
+            with open(tmp, 'wb') as f:
+                while chunk := resp.read(65536):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        pct = int(downloaded * 100 / total)
+                        Clock.schedule_once(lambda _, p=pct, t=title:
+                            setattr(self._root.ids.now_playing, 'text',
+                                    f'dl {t[:30]} {p}%'))
+            resp.close()
             os.rename(tmp, dest)
             self._cached_ids.add(track_id)
             Clock.schedule_once(lambda _: self._refresh_cache_markers())
@@ -1101,9 +1115,18 @@ class OwnlyApp(App):
         try:
             tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
             tmp_path = tmp.name
-            with urllib.request.urlopen(url, timeout=60) as resp:
+            resp = urllib.request.urlopen(url, timeout=60)
+            total = int(resp.headers.get('Content-Length', 0))
+            downloaded = 0
+            with resp:
                 while chunk := resp.read(65536):
                     tmp.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        pct = int(downloaded * 100 / total)
+                        Clock.schedule_once(lambda _, p=pct, l=label:
+                            setattr(self._root.ids.now_playing, 'text',
+                                    f'⏳ {l[:30]} {p}%'))
             tmp.close()
             self._tmp_file = tmp_path
             Clock.schedule_once(lambda _: self._setup_exoplayer(tmp_path, label))
