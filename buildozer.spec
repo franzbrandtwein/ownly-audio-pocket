@@ -14,6 +14,8 @@ requirements = python3==3.11.5,kivy==2.3.0,android,jnius
 
 # ZXing barcode scanner bundled directly in APK (no opencv needed on Android)
 android.gradle_dependencies = com.journeyapps:zxing-android-embedded:4.3.0
+# Declare CaptureActivity explicitly so Android can find it via Intent
+android.add_activities = com.journeyapps.barcodescanner.CaptureActivity
 
 p4a.branch = v2024.01.21
 
