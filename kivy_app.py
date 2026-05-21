@@ -724,6 +724,23 @@ class OwnlyApp(App):
 
     def _android_zxing_scan(self):
         try:
+            from android.permissions import check_permission, request_permissions  # type: ignore
+        except Exception as e:
+            self._root.ids.now_playing.text = f'QR perm: {e}'
+            return
+
+        if check_permission('android.permission.CAMERA'):
+            self._launch_zxing()
+        else:
+            def _on_perm(permissions, grants):
+                if grants and grants[0]:
+                    Clock.schedule_once(lambda _dt: self._launch_zxing(), 0)
+                else:
+                    self._root.ids.now_playing.text = 'QR: Kamera-Berechtigung verweigert'
+            request_permissions(['android.permission.CAMERA'], _on_perm)
+
+    def _launch_zxing(self):
+        try:
             from jnius import autoclass          # type: ignore
             from android import activity as _act # type: ignore
 
