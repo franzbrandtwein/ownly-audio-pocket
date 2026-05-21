@@ -22,6 +22,7 @@ from kivy.lang import Builder
 from kivy.uix.recycleview import RecycleView
 from kivy.uix.recycleview.views import RecycleDataViewBehavior
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.widget import Widget
 from kivy.uix.popup import Popup
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.label import Label
@@ -684,6 +685,21 @@ class OwnlyApp(App):
     title = 'Ownly Audio Pocket'
 
     def build(self):
+        try:
+            return self._build_inner()
+        except Exception:
+            import traceback
+            err = traceback.format_exc()
+            # Show error on screen so we can read it
+            from kivy.uix.scrollview import ScrollView
+            from kivy.uix.label import Label as _L
+            sv = ScrollView()
+            lbl = _L(text=err, font_size='11sp', size_hint_y=None, markup=False)
+            lbl.bind(texture_size=lbl.setter('size'))
+            sv.add_widget(lbl)
+            return sv
+
+    def _build_inner(self):
         Builder.load_string(KV)
         self._root = OwnlyRoot()
         if platform == 'android':
