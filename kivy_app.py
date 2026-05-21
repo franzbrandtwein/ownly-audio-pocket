@@ -26,6 +26,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.image import Image as KivyImage
 from kivy.uix.label import Label
 from kivy.uix.button import Button
+from kivy.uix.progressbar import ProgressBar  # noqa: F401 — needed for KV
 from kivy.properties import (
     BooleanProperty, StringProperty, NumericProperty
 )
