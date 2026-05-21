@@ -277,7 +277,7 @@ KV = """
     BoxLayout:
         orientation: 'vertical'
         size_hint_y: None
-        height: dp(84)
+        height: dp(106)
         padding: dp(8), dp(4)
         spacing: dp(4)
         canvas.before:
@@ -302,6 +302,26 @@ KV = """
             halign: 'center'
             valign: 'middle'
             text_size: self.size
+
+        # ── Progress ───────────────────────────────────────────────────────
+        BoxLayout:
+            size_hint_y: None
+            height: dp(16)
+            spacing: dp(8)
+            ProgressBar:
+                id: progress_bar
+                max: 1000
+                value: 0
+            Label:
+                id: time_label
+                text: ''
+                size_hint_x: None
+                width: dp(90)
+                font_size: dp(11)
+                halign: 'right'
+                valign: 'middle'
+                text_size: self.size
+                color: (.45, .45, .45, 1)
 
         BoxLayout:
             spacing: dp(6)
@@ -609,6 +629,8 @@ class OwnlyApp(App):
         self._active_srv_idx = -1
         self._sound          = None
         self._shuffle        = False
+        self._mp_listener    = None
+        self._progress_clock = None
         self._server_host    = ''
         self._soap_port      = 8767
         self._tmp_file       = None
@@ -904,6 +926,41 @@ class OwnlyApp(App):
         mp.start()
         self._root.ids.now_playing.text = f'> {label}'
         self._root.ids.play_btn.text = '||'
+        self._start_progress_clock()
+
+    def _start_progress_clock(self):
+        self._stop_progress_clock()
+        self._progress_clock = Clock.schedule_interval(self._update_progress, 1.0)
+
+    def _stop_progress_clock(self):
+        if self._progress_clock:
+            self._progress_clock.cancel()
+            self._progress_clock = None
+
+    def _update_progress(self, dt):
+        mp = self._sound
+        if mp is None:
+            self._stop_progress_clock()
+            return
+        try:
+            pos = mp.getCurrentPosition()   # ms
+            dur = mp.getDuration()          # ms  (-1 if unknown)
+            if dur > 0:
+                self._root.ids.progress_bar.value = int(pos * 1000 / dur)
+                self._root.ids.time_label.text = (
+                    f'{pos//60000}:{(pos//1000)%60:02d} / '
+                    f'{dur//60000}:{(dur//1000)%60:02d}'
+                )
+            else:
+                self._root.ids.progress_bar.value = 0
+                self._root.ids.time_label.text = f'{pos//60000}:{(pos//1000)%60:02d}'
+        except Exception:
+            self._stop_progress_clock()
+
+    def _reset_progress(self):
+        self._stop_progress_clock()
+        self._root.ids.progress_bar.value = 0
+        self._root.ids.time_label.text = ''
 
     def _fetch_and_play(self, url, label):
         """Desktop: download to temp file, then load and play."""
@@ -932,6 +989,7 @@ class OwnlyApp(App):
             self._root.ids.play_btn.text = '>'
 
     def _on_play_error(self, msg):
+        self._reset_progress()
         self._root.ids.now_playing.text = f'❌ {msg[:60]}'
         self._root.ids.play_btn.text = '>'
 
@@ -939,6 +997,7 @@ class OwnlyApp(App):
         Clock.schedule_once(lambda _: self._auto_next())
 
     def _auto_next(self):
+        self._reset_progress()
         if not self._filtered:
             return
         if self._shuffle:
@@ -966,9 +1025,11 @@ class OwnlyApp(App):
         try:
             if self._sound.isPlaying():
                 self._sound.pause()
+                self._stop_progress_clock()
                 self._root.ids.play_btn.text = '>'
             else:
                 self._sound.start()
+                self._start_progress_clock()
                 self._root.ids.play_btn.text = '||'
         except Exception as e:
             self._root.ids.now_playing.text = f'❌ {e}'
