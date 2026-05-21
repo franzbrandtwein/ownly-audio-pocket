@@ -738,7 +738,7 @@ class OwnlyApp(App):
         self._apply_active_marker()
         self._set_list_data(self._filtered)
 
-
+    def _apply_android_insets(self, *_):
         from kivy.core.window import Window
         from kivy.metrics import dp
         sb = getattr(Window, 'statusbar_height', dp(28))
