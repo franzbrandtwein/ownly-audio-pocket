@@ -98,19 +98,19 @@ jobs:
       # ── Build ─────────────────────────────────────────────────────────────
       - name: Build APK
         env:
-          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/../../../.android/debug.keystore
+          P4A_RELEASE_KEYSTORE: ${{ env.HOME }}/.android/debug.keystore
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.OWNLY_STORE_PASSWORD }}
           P4A_RELEASE_KEYALIAS: ${{ secrets.OWNLY_KEY_ALIAS }}
           P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.OWNLY_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          buildozer android debug 2>&1 | tee build.log
+          buildozer android release 2>&1 | tee build.log
 
       # ── Upload artifact ───────────────────────────────────────────────────
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ownly-audio-pocket-debug
+          name: ownly-audio-pocket-release
           path: bin/*.apk
           if-no-files-found: error
 
