@@ -85,13 +85,13 @@ KV = """
 
 <TrackRow>:
     size_hint_y: None
-    height: dp(62)
-    padding: dp(12), dp(6)
+    height: dp(54)
+    padding: dp(20), dp(6), dp(12), dp(6)
     spacing: dp(0)
     orientation: 'horizontal'
     canvas.before:
         Color:
-            rgba: (.22, .14, .05, 1) if self.is_active else (.14, .14, .14, 1)
+            rgba: (.22, .14, .05, 1) if self.is_active else (.12, .12, .12, 1)
         Rectangle:
             size: self.size
             pos: self.pos
@@ -101,31 +101,67 @@ KV = """
             points: self.x, self.y, self.x + self.width, self.y
             width: 1
 
-    BoxLayout:
-        orientation: 'vertical'
-        spacing: dp(2)
-        Label:
-            text: root.title
-            font_size: dp(13)
-            halign: 'left'
-            valign: 'middle'
-            text_size: self.size
-            color: (1, .7, .25, 1) if root.is_active else (.95, .95, .95, 1)
-            bold: root.is_active
-        Label:
-            text: root.band + '  ·  ' + root.album
-            font_size: dp(10)
-            halign: 'left'
-            valign: 'middle'
-            text_size: self.size
-            color: (.55, .55, .55, 1)
+    Label:
+        text: root.title
+        font_size: dp(13)
+        halign: 'left'
+        valign: 'middle'
+        text_size: self.size
+        color: (1, .7, .25, 1) if root.is_active else (.95, .95, .95, 1)
+        bold: root.is_active
+
+<BandHeader>:
+    size_hint_y: None
+    height: dp(38)
+    padding: dp(12), dp(4)
+    orientation: 'horizontal'
+    canvas.before:
+        Color:
+            rgba: (.1, .1, .1, 1)
+        Rectangle:
+            size: self.size
+            pos: self.pos
+        Color:
+            rgba: (.93, .4, .2, .6)
+        Line:
+            points: self.x, self.y, self.x + self.width, self.y
+            width: 1.5
+
+    Label:
+        text: root.band
+        font_size: dp(13)
+        bold: True
+        halign: 'left'
+        valign: 'middle'
+        text_size: self.size
+        color: (.93, .4, .2, 1)
+
+<AlbumHeader>:
+    size_hint_y: None
+    height: dp(30)
+    padding: dp(22), dp(2), dp(12), dp(2)
+    orientation: 'horizontal'
+    canvas.before:
+        Color:
+            rgba: (.13, .13, .13, 1)
+        Rectangle:
+            size: self.size
+            pos: self.pos
+
+    Label:
+        text: root.album
+        font_size: dp(11)
+        halign: 'left'
+        valign: 'middle'
+        text_size: self.size
+        color: (.55, .55, .55, 1)
+        italic: True
 
 <TrackList>:
-    viewclass: 'TrackRow'
     bar_width: dp(4)
     bar_color: (.93, .4, .2, .8)
     RecycleBoxLayout:
-        default_size: None, dp(62)
+        default_size: None, None
         default_size_hint: 1, None
         size_hint_y: None
         height: self.minimum_height
@@ -296,6 +332,22 @@ class TrackRow(RecycleDataViewBehavior, BoxLayout):
             App.get_running_app().play_idx(self.idx)
             return True
         return super().on_touch_down(touch)
+
+
+class BandHeader(RecycleDataViewBehavior, BoxLayout):
+    band = StringProperty('')
+
+    def refresh_view_attrs(self, rv, index, data):
+        self.band = data.get('band', '')
+        return super().refresh_view_attrs(rv, index, data)
+
+
+class AlbumHeader(RecycleDataViewBehavior, BoxLayout):
+    album = StringProperty('')
+
+    def refresh_view_attrs(self, rv, index, data):
+        self.album = data.get('album', '')
+        return super().refresh_view_attrs(rv, index, data)
 
 
 class TrackList(RecycleView):
@@ -563,10 +615,31 @@ class OwnlyApp(App):
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_error(str(e)))
 
+    def _build_grouped_data(self, tracks):
+        """Build flat list with BandHeader / AlbumHeader / TrackRow entries."""
+        from collections import OrderedDict
+        grouped = OrderedDict()
+        for t in tracks:
+            band  = t.get('band', '?')
+            album = t.get('album', '?')
+            grouped.setdefault(band, OrderedDict()).setdefault(album, []).append(t)
+
+        result = []
+        for band, albums in grouped.items():
+            result.append({'viewclass': 'BandHeader', 'band': band})
+            for album, album_tracks in albums.items():
+                result.append({'viewclass': 'AlbumHeader', 'album': album})
+                for t in album_tracks:
+                    result.append(dict(t, viewclass='TrackRow'))
+        return result
+
+    def _set_list_data(self, tracks):
+        self._root.ids.track_list.data = self._build_grouped_data(tracks)
+
     def _on_connected(self, tracks):
         self._all_tracks = tracks
         self._filtered   = list(tracks)
-        self._root.ids.track_list.data = self._filtered
+        self._set_list_data(self._filtered)
         self._root.ids.status_dot.color = (.2, .9, .3, 1)
         n = len(tracks)
         self._root.ids.now_playing.text = f'✓ {n} Tracks geladen'
@@ -589,7 +662,7 @@ class OwnlyApp(App):
         else:
             self._filtered = list(self._all_tracks)
         self._apply_active_marker()
-        self._root.ids.track_list.data = self._filtered
+        self._set_list_data(self._filtered)
 
     # ── Playback ─────────────────────────────────────────────────────────────
 
@@ -862,7 +935,8 @@ class OwnlyApp(App):
     def _apply_active_marker(self):
         for t in self._filtered:
             t['is_active'] = (t['idx'] == self._active_srv_idx)
-        self._root.ids.track_list.refresh_from_data()
+        # Rebuild grouped data so is_active is reflected in TrackRow entries
+        self._set_list_data(self._filtered)
 
     def on_stop(self):
         if self._sound:
