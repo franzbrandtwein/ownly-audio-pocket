@@ -28,7 +28,7 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.progressbar import ProgressBar  # noqa: F401 — needed for KV
 from kivy.properties import (
-    BooleanProperty, StringProperty, NumericProperty
+    BooleanProperty, StringProperty, NumericProperty, ListProperty
 )
 from kivy.core.audio import SoundLoader
 from kivy.clock import Clock
@@ -189,6 +189,14 @@ KV = """
         orientation: 'vertical'
         spacing: 0
 
+<StatusDot>:
+    canvas:
+        Color:
+            rgba: self.dot_color
+        Ellipse:
+            pos: self.x + dp(1), self.center_y - dp(6)
+            size: dp(12), dp(12)
+
 <OwnlyRoot>:
     orientation: 'vertical'
     canvas.before:
@@ -238,13 +246,10 @@ KV = """
             background_color: (.93, .4, .2, 1)
             on_release: app.connect(server_input.text)
 
-        Label:
+        StatusDot:
             id: status_dot
-            text: '●'
-            color: (.35, .35, .35, 1)
             size_hint_x: None
-            width: dp(20)
-            font_size: dp(16)
+            width: dp(14)
 
     # ── Search + offline filter ─────────────────────────────────────────────
     BoxLayout:
@@ -411,6 +416,10 @@ class AlbumHeader(RecycleDataViewBehavior, BoxLayout):
 
 class TrackList(RecycleView):
     pass
+
+
+class StatusDot(Widget):
+    dot_color = ListProperty([.35, .35, .35, 1])
 
 
 class OwnlyRoot(BoxLayout):
@@ -754,7 +763,7 @@ class OwnlyApp(App):
             self._soap_port   = int(port)
         else:
             self._server_host = addr
-        self._root.ids.status_dot.color = (.9, .7, .1, 1)  # yellow = connecting
+        self._root.ids.status_dot.dot_color = (.9, .7, .1, 1)  # yellow = connecting
         self._root.ids.now_playing.text = '⏳ Verbinde …'
         threading.Thread(target=self._do_connect, daemon=True).start()
 
@@ -813,7 +822,7 @@ class OwnlyApp(App):
         self._all_tracks = tracks
         self._filtered   = list(tracks)
         self._set_list_data(self._filtered)
-        self._root.ids.status_dot.color = (.2, .9, .3, 1)
+        self._root.ids.status_dot.dot_color = (.2, .9, .3, 1)
         n = len(tracks)
         self._root.ids.now_playing.text = f'✓ {n} Tracks geladen'
         addr = self._root.ids.server_input.text.strip()
@@ -821,7 +830,7 @@ class OwnlyApp(App):
             self._save_host(addr)
 
     def _on_error(self, msg):
-        self._root.ids.status_dot.color = (.9, .2, .2, 1)
+        self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
         self._root.ids.now_playing.text = f'❌ {msg[:70]}'
 
     # ── Search / filter ─────────────────────────────────────────────────────
