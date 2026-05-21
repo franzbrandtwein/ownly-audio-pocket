@@ -568,16 +568,37 @@ class OwnlyApp(App):
             from kivy.clock import Clock as _Clock
             _Clock.schedule_once(self._apply_android_insets, 0.5)
 
-        self._all_tracks    = []   # raw list from SOAP
-        self._filtered      = []   # currently visible (matches search)
-        self._active_srv_idx = -1  # server-side idx of currently playing track
+        self._all_tracks    = []
+        self._filtered      = []
+        self._active_srv_idx = -1
         self._sound          = None
         self._shuffle        = False
         self._server_host    = ''
         self._soap_port      = 8767
         self._tmp_file       = None
 
+        Clock.schedule_once(self._load_saved_host, 0)
         return self._root
+
+    def _host_file(self):
+        import os
+        return os.path.join(self.user_data_dir, 'last_host.txt')
+
+    def _load_saved_host(self, *_):
+        try:
+            with open(self._host_file(), 'r') as f:
+                saved = f.read().strip()
+            if saved:
+                self._root.ids.server_input.text = saved
+        except Exception:
+            pass
+
+    def _save_host(self, addr):
+        try:
+            with open(self._host_file(), 'w') as f:
+                f.write(addr)
+        except Exception:
+            pass
 
     def _apply_android_insets(self, dt):
         from kivy.core.window import Window
@@ -646,6 +667,9 @@ class OwnlyApp(App):
         self._root.ids.status_dot.color = (.2, .9, .3, 1)
         n = len(tracks)
         self._root.ids.now_playing.text = f'✓ {n} Tracks geladen'
+        addr = self._root.ids.server_input.text.strip()
+        if addr:
+            self._save_host(addr)
 
     def _on_error(self, msg):
         self._root.ids.status_dot.color = (.9, .2, .2, 1)
