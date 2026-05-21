@@ -43,15 +43,17 @@ from kivy.utils import platform
 _SOAP_NS   = 'http://ownly.audio/soap'
 _SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
 
-# Android MediaPlayer completion listener — defined once to avoid jnius
-# re-registering a Java proxy class on every play() call (→ crash).
-_AndroidListenerClass = None
+# Android MediaPlayer listener classes — each defined once (jnius registers
+# a Java proxy class by Python class name; redefining causes crashes).
+_AndroidCompletionListenerClass = None
+_AndroidPreparedListenerClass   = None
 
-def _get_android_listener_class():
-    global _AndroidListenerClass
-    if _AndroidListenerClass is None:
+def _get_android_listener_classes():
+    global _AndroidCompletionListenerClass, _AndroidPreparedListenerClass
+    if _AndroidCompletionListenerClass is None:
         from jnius import PythonJavaClass, java_method  # type: ignore
-        class _Listener(PythonJavaClass):
+
+        class _CompletionListener(PythonJavaClass):
             __javainterfaces__ = ['android/media/MediaPlayer$OnCompletionListener']
             __javacontext__ = 'app'
             def __init__(self, cb):
@@ -60,8 +62,20 @@ def _get_android_listener_class():
             @java_method('(Landroid/media/MediaPlayer;)V')
             def onCompletion(self, _mp):
                 self._cb()
-        _AndroidListenerClass = _Listener
-    return _AndroidListenerClass
+
+        class _PreparedListener(PythonJavaClass):
+            __javainterfaces__ = ['android/media/MediaPlayer$OnPreparedListener']
+            __javacontext__ = 'app'
+            def __init__(self, cb):
+                super().__init__()
+                self._cb = cb
+            @java_method('(Landroid/media/MediaPlayer;)V')
+            def onPrepared(self, _mp):
+                self._cb()
+
+        _AndroidCompletionListenerClass = _CompletionListener
+        _AndroidPreparedListenerClass   = _PreparedListener
+    return _AndroidCompletionListenerClass, _AndroidPreparedListenerClass
 
 
 def _soap_request(host, port, method, **params):
@@ -986,12 +1000,8 @@ class OwnlyApp(App):
         else:
             url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
         if platform == 'android':
-            # Stream URL directly via Android MediaPlayer — no temp file, no blocking load()
-            threading.Thread(
-                target=self._stream_android,
-                args=(url, label),
-                daemon=True
-            ).start()
+            # All MediaPlayer setup must run on main thread (needs Looper).
+            self._setup_mediaplayer(url, label)
         else:
             threading.Thread(
                 target=self._fetch_and_play,
@@ -999,24 +1009,28 @@ class OwnlyApp(App):
                 daemon=True
             ).start()
 
-    def _stream_android(self, url, label):
-        """Android: play HTTP stream or local file via MediaPlayer."""
+    def _setup_mediaplayer(self, url, label):
+        """Main-thread: create MediaPlayer, attach listeners, start prepareAsync."""
         try:
             from jnius import autoclass  # type: ignore
             MediaPlayer = autoclass('android.media.MediaPlayer')
             mp = MediaPlayer()
 
-            ListenerClass = _get_android_listener_class()
-            self._mp_listener = ListenerClass(
+            CompClass, PrepClass = _get_android_listener_classes()
+
+            self._mp_listener = CompClass(
                 lambda: Clock.schedule_once(lambda _dt: self._auto_next())
             )
-            mp.setOnCompletionListener(self._mp_listener)
+            self._mp_prepared = PrepClass(
+                lambda: Clock.schedule_once(lambda _dt: self._play_mediaplayer(mp, label))
+            )
 
+            mp.setOnCompletionListener(self._mp_listener)
+            mp.setOnPreparedListener(self._mp_prepared)
             mp.setDataSource(url)
-            mp.prepare()   # blocking, in background thread → no ANR
-            Clock.schedule_once(lambda _: self._play_mediaplayer(mp, label))
+            mp.prepareAsync()   # non-blocking — fires OnPreparedListener when ready
         except Exception as e:
-            Clock.schedule_once(lambda _: self._on_play_error(str(e)))
+            self._on_play_error(str(e))
 
     def _play_mediaplayer(self, mp, label):
         """Main-thread: start prepared MediaPlayer."""
