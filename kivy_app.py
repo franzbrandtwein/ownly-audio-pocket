@@ -1129,8 +1129,8 @@ class OwnlyApp(App):
 
             ExoListenerClass = _get_exo_listener_class()
             self._mp_listener = ExoListenerClass(
-                on_ended=lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
-                on_error=lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
+                lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
+                lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
             )
             player.addListener(self._mp_listener)
 
