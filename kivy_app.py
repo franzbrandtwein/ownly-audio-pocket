@@ -114,8 +114,8 @@ KV = """
     Button:
         size_hint_x: None
         width: dp(34)
-        text: '✓' if root.is_cached else '↓'
-        font_size: dp(14)
+        text: 'ok' if root.is_cached else 'dl'
+        font_size: dp(11)
         background_color: 0, 0, 0, 0
         color: (.3, .9, .3, 1) if root.is_cached else (.45, .45, .45, 1)
         on_release: app.download_track_by_id(root.idx, root.track_id)
@@ -170,8 +170,8 @@ KV = """
     Button:
         size_hint_x: None
         width: dp(34)
-        text: '✓' if root.album_cached else '↓'
-        font_size: dp(12)
+        text: 'ok' if root.album_cached else 'dl'
+        font_size: dp(11)
         background_color: 0, 0, 0, 0
         color: (.3, .9, .3, 1) if root.album_cached else (.45, .45, .45, 1)
         on_release: app.download_album(root.album)
