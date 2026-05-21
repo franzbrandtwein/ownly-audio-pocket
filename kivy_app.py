@@ -738,13 +738,20 @@ class OwnlyApp(App):
         except Exception:
             import traceback
             err = traceback.format_exc()
-            # Show error on screen so we can read it
             from kivy.uix.scrollview import ScrollView
-            from kivy.uix.label import Label as _L
+            from kivy.uix.textinput import TextInput as _TI
             sv = ScrollView()
-            lbl = _L(text=err, font_size='11sp', size_hint_y=None, markup=False)
-            lbl.bind(texture_size=lbl.setter('size'))
-            sv.add_widget(lbl)
+            ti = _TI(
+                text=err,
+                font_size='11sp',
+                readonly=True,
+                multiline=True,
+                background_color=(0.08, 0.08, 0.08, 1),
+                foreground_color=(1, 0.4, 0.4, 1),
+                size_hint_y=None,
+            )
+            ti.bind(minimum_height=ti.setter('height'))
+            sv.add_widget(ti)
             return sv
 
     def _build_inner(self):
