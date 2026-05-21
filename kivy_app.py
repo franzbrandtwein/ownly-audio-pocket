@@ -144,7 +144,8 @@ KV = """
 <BandHeader>:
     size_hint_y: None
     height: dp(38)
-    padding: dp(12), dp(4)
+    padding: dp(8), dp(4)
+    spacing: dp(6)
     orientation: 'horizontal'
     canvas.before:
         Color:
@@ -159,6 +160,14 @@ KV = """
             width: 1.5
 
     Label:
+        text: 'v' if root.is_expanded else '>'
+        size_hint_x: None
+        width: dp(14)
+        font_size: dp(13)
+        bold: True
+        color: (.93, .4, .2, 1)
+
+    Label:
         text: root.band
         font_size: dp(13)
         bold: True
@@ -170,7 +179,8 @@ KV = """
 <AlbumHeader>:
     size_hint_y: None
     height: dp(30)
-    padding: dp(22), dp(2), dp(6), dp(2)
+    padding: dp(28), dp(2), dp(6), dp(2)
+    spacing: dp(4)
     orientation: 'horizontal'
     canvas.before:
         Color:
@@ -178,6 +188,13 @@ KV = """
         Rectangle:
             size: self.size
             pos: self.pos
+
+    Label:
+        text: 'v' if root.is_expanded else '>'
+        size_hint_x: None
+        width: dp(14)
+        font_size: dp(11)
+        color: (.55, .55, .55, 1)
 
     Label:
         text: root.album
@@ -418,21 +435,41 @@ class TrackRow(RecycleDataViewBehavior, BoxLayout):
 
 
 class BandHeader(RecycleDataViewBehavior, BoxLayout):
-    band = StringProperty('')
+    band        = StringProperty('')
+    is_expanded = BooleanProperty(False)
 
     def refresh_view_attrs(self, rv, index, data):
-        self.band = data.get('band', '')
+        self.band        = data.get('band', '')
+        self.is_expanded = data.get('is_expanded', False)
         return super().refresh_view_attrs(rv, index, data)
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            App.get_running_app().toggle_band(self.band)
+            return True
+        return False
 
 
 class AlbumHeader(RecycleDataViewBehavior, BoxLayout):
     album        = StringProperty('')
+    album_key    = StringProperty('')
     album_cached = BooleanProperty(False)
+    is_expanded  = BooleanProperty(False)
 
     def refresh_view_attrs(self, rv, index, data):
         self.album        = data.get('album', '')
+        self.album_key    = data.get('album_key', '')
         self.album_cached = data.get('album_cached', False)
+        self.is_expanded  = data.get('is_expanded', False)
         return super().refresh_view_attrs(rv, index, data)
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            if super().on_touch_down(touch):   # download button gets priority
+                return True
+            App.get_running_app().toggle_album(self.album_key)
+            return True
+        return False
 
 
 class TrackList(RecycleView):
@@ -667,6 +704,8 @@ class OwnlyApp(App):
         self._tmp_file       = None
         self._cached_ids     = set()
         self._offline_only   = False
+        self._expanded_bands  = set()
+        self._expanded_albums = set()
 
         Clock.schedule_once(self._load_saved_host, 0)
         Clock.schedule_once(self._load_cached_ids, 0)
@@ -753,6 +792,25 @@ class OwnlyApp(App):
         )
         self._apply_filters()
 
+    def toggle_band(self, band):
+        if band in self._expanded_bands:
+            self._expanded_bands.discard(band)
+            # collapse all albums of this band too
+            prefix = band + '::'
+            for key in list(self._expanded_albums):
+                if key.startswith(prefix):
+                    self._expanded_albums.discard(key)
+        else:
+            self._expanded_bands.add(band)
+        self._apply_filters()
+
+    def toggle_album(self, album_key):
+        if album_key in self._expanded_albums:
+            self._expanded_albums.discard(album_key)
+        else:
+            self._expanded_albums.add(album_key)
+        self._apply_filters()
+
     def _apply_filters(self):
         q = self._root.ids.search_input.text.lower().strip()
         result = self._all_tracks
@@ -819,15 +877,27 @@ class OwnlyApp(App):
 
         result = []
         for band, albums in grouped.items():
-            result.append({'viewclass': 'BandHeader', 'band': band, 'height': dp(38)})
+            band_expanded = band in self._expanded_bands
+            result.append({
+                'viewclass': 'BandHeader', 'band': band,
+                'height': dp(38), 'is_expanded': band_expanded,
+            })
+            if not band_expanded:
+                continue
             for album, album_tracks in albums.items():
+                album_key    = f'{band}::{album}'
+                album_expanded = album_key in self._expanded_albums
                 album_cached = bool(album_tracks) and all(
                     t.get('track_id') in self._cached_ids for t in album_tracks
                 )
                 result.append({
                     'viewclass': 'AlbumHeader', 'album': album,
+                    'album_key': album_key,
                     'height': dp(30), 'album_cached': album_cached,
+                    'is_expanded': album_expanded,
                 })
+                if not album_expanded:
+                    continue
                 for t in album_tracks:
                     result.append(dict(
                         t,
