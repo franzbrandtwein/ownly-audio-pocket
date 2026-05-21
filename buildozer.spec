@@ -5,8 +5,10 @@ package.domain = de.ownly
 version = 1.0.0
 
 source.dir = .
-source.include_exts = py
+source.include_exts = py,png
 source.exclude_dirs = music,dist,.certs,.github,__pycache__
+
+icon.filename = %(source.dir)s/icon.png
 
 # ── Python / Kivy ──────────────────────────────────────────────────────────
 # p4a v2024.01.21 uses Python 3.11.5 and NDK r25b (stable, avoids 3.14 ABI)
