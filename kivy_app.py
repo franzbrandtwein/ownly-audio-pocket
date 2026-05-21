@@ -607,7 +607,13 @@ class OwnlyApp(App):
         self._root.ids.play_btn.text = '||'
 
         if self._sound:
-            self._sound.stop()
+            try:
+                self._sound.stop()
+                # Release if Android MediaPlayer
+                if hasattr(self._sound, 'release'):
+                    self._sound.release()
+            except Exception:
+                pass
             self._sound = None
 
         # Clean up previous temp file
@@ -619,42 +625,80 @@ class OwnlyApp(App):
             self._tmp_file = None
 
         url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
-        threading.Thread(
-            target=self._fetch_and_play,
-            args=(url, label),
-            daemon=True
-        ).start()
+        if platform == 'android':
+            # Stream URL directly via Android MediaPlayer — no temp file, no blocking load()
+            threading.Thread(
+                target=self._stream_android,
+                args=(url, label),
+                daemon=True
+            ).start()
+        else:
+            threading.Thread(
+                target=self._fetch_and_play,
+                args=(url, label),
+                daemon=True
+            ).start()
 
-    def _fetch_and_play(self, url, label):
+    def _stream_android(self, url, label):
+        """Android: play HTTP stream via MediaPlayer directly (no full download needed)."""
         try:
-            # On Android use app cache dir; elsewhere use system tmp
-            if platform == 'android':
-                try:
-                    from jnius import autoclass  # type: ignore
-                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                    cache_dir = str(
-                        PythonActivity.mActivity.getCacheDir().getAbsolutePath()
-                    )
-                except Exception:
-                    cache_dir = tempfile.gettempdir()
-                tmp_path = os.path.join(cache_dir, f'ownly_{os.getpid()}.mp3')
-                tmp_fd = open(tmp_path, 'wb')
-            else:
-                tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
-                tmp_path = tmp.name
-                tmp_fd = tmp
-
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                while chunk := resp.read(65536):
-                    tmp_fd.write(chunk)
-            tmp_fd.close()
-            self._tmp_file = tmp_path
-            Clock.schedule_once(lambda _: self._play_file(tmp_path, label))
+            from jnius import autoclass  # type: ignore
+            MediaPlayer = autoclass('android.media.MediaPlayer')
+            mp = MediaPlayer()
+            mp.setDataSource(url)
+            mp.prepare()           # blocking but in background thread → no ANR
+            Clock.schedule_once(lambda _: self._play_mediaplayer(mp, label))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 
-    def _play_file(self, path, label):
-        self._sound = SoundLoader.load(path)
+    def _play_mediaplayer(self, mp, label):
+        """Main-thread: start prepared MediaPlayer."""
+        if self._sound:
+            try:
+                self._sound.stop()
+                self._sound.release()
+            except Exception:
+                pass
+        self._sound = mp
+        mp.start()
+        self._root.ids.now_playing.text = f'> {label}'
+        self._root.ids.play_btn.text = '||'
+        # Poll for completion (MediaPlayer has no easy Python callback)
+        Clock.schedule_interval(self._check_mp_done, 1.0)
+
+    def _check_mp_done(self, dt):
+        mp = self._sound
+        if mp is None:
+            return False  # unschedule
+        try:
+            from jnius import autoclass  # type: ignore
+            MediaPlayer = autoclass('android.media.MediaPlayer')
+            if not isinstance(mp, MediaPlayer):
+                return False
+            if not mp.isPlaying():
+                Clock.schedule_once(lambda _: self._auto_next())
+                return False  # unschedule
+        except Exception:
+            return False
+
+    def _fetch_and_play(self, url, label):
+        """Desktop: download to temp file, then load and play."""
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+            tmp_path = tmp.name
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                while chunk := resp.read(65536):
+                    tmp.write(chunk)
+            tmp.close()
+            self._tmp_file = tmp_path
+            # Load in background thread to keep main thread free
+            sound = SoundLoader.load(tmp_path)
+            Clock.schedule_once(lambda _: self._play_file(sound, label))
+        except Exception as e:
+            Clock.schedule_once(lambda _: self._on_play_error(str(e)))
+
+    def _play_file(self, sound, label):
+        self._sound = sound
         if self._sound:
             self._sound.bind(on_stop=self._on_track_ended)
             self._sound.play()
@@ -684,14 +728,46 @@ class OwnlyApp(App):
             nxt = self._filtered[(cur_pos + 1) % len(self._filtered)]
         self.play_idx(nxt['idx'])
 
-    def toggle_play(self):
-        if self._sound:
-            if self._sound.state == 'play':
-                self._sound.stop()
+    def _is_mp_playing(self):
+        """True if current sound is an Android MediaPlayer and currently playing."""
+        try:
+            from jnius import autoclass  # type: ignore
+            MediaPlayer = autoclass('android.media.MediaPlayer')
+            return isinstance(self._sound, MediaPlayer) and self._sound.isPlaying()
+        except Exception:
+            return False
+
+    def _mp_pause_resume(self):
+        """Pause or resume Android MediaPlayer."""
+        try:
+            if self._sound.isPlaying():
+                self._sound.pause()
                 self._root.ids.play_btn.text = '>'
             else:
-                self._sound.play()
+                self._sound.start()
                 self._root.ids.play_btn.text = '||'
+        except Exception as e:
+            self._root.ids.now_playing.text = f'❌ {e}'
+
+    def toggle_play(self):
+        if not self._sound:
+            return
+        if platform == 'android':
+            try:
+                from jnius import autoclass  # type: ignore
+                MediaPlayer = autoclass('android.media.MediaPlayer')
+                if isinstance(self._sound, MediaPlayer):
+                    self._mp_pause_resume()
+                    return
+            except Exception:
+                pass
+        # Kivy SoundLoader path
+        if self._sound.state == 'play':
+            self._sound.stop()
+            self._root.ids.play_btn.text = '>'
+        else:
+            self._sound.play()
+            self._root.ids.play_btn.text = '||'
 
     def next_track(self):
         self._auto_next()
@@ -789,7 +865,12 @@ class OwnlyApp(App):
 
     def on_stop(self):
         if self._sound:
-            self._sound.stop()
+            try:
+                self._sound.stop()
+                if hasattr(self._sound, 'release'):
+                    self._sound.release()
+            except Exception:
+                pass
         if self._tmp_file and os.path.exists(self._tmp_file):
             try:
                 os.unlink(self._tmp_file)
