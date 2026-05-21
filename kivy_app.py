@@ -250,6 +250,46 @@ KV = """
             pos: self.x + dp(1), self.center_y - dp(6)
             size: dp(12), dp(12)
 
+<ConnectionsPopup>:
+    title: 'Verbindung'
+    size_hint: .92, None
+    height: dp(190)
+    auto_dismiss: True
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        padding: dp(12)
+        TextInput:
+            id: host_input
+            hint_text: 'Server IP:Port'
+            font_size: dp(14)
+            multiline: False
+            background_color: (.18, .18, .18, 1)
+            foreground_color: (.9, .9, .9, 1)
+            cursor_color: (1, .5, .2, 1)
+            on_text_validate: app.connect(self.text); root.dismiss()
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+            Button:
+                text: 'Suchen'
+                font_size: dp(13)
+                background_color: (.18, .18, .18, 1)
+                on_release: app.autodiscover()
+            Button:
+                text: 'QR'
+                font_size: dp(13)
+                size_hint_x: None
+                width: dp(52)
+                background_color: (.18, .18, .18, 1)
+                on_release: app.open_qr_scan(); root.dismiss()
+            Button:
+                text: 'Verbinden'
+                font_size: dp(13)
+                background_color: (.93, .4, .2, 1)
+                on_release: app.connect(host_input.text); root.dismiss()
+
 <OwnlyRoot>:
     orientation: 'vertical'
     canvas.before:
@@ -259,12 +299,12 @@ KV = """
             size: self.size
             pos: self.pos
 
-    # ── Server bar ──────────────────────────────────────────────────────────
+    # ── Header bar ──────────────────────────────────────────────────────────
     BoxLayout:
         size_hint_y: None
         height: dp(50)
-        padding: dp(8), dp(6)
-        spacing: dp(6)
+        padding: dp(4), dp(6)
+        spacing: dp(4)
         canvas.before:
             Color:
                 rgba: (.11, .11, .11, 1)
@@ -272,46 +312,27 @@ KV = """
                 size: self.size
                 pos: self.pos
 
-        TextInput:
-            id: server_input
-            text: '192.168.x.x:8767'
-            hint_text: 'Server IP:Port'
-            font_size: dp(13)
-            multiline: False
-            background_color: (.18, .18, .18, 1)
-            foreground_color: (.9, .9, .9, 1)
-            cursor_color: (1, .5, .2, 1)
-            size_hint_x: 0.45
-            on_text_validate: app.connect(self.text)
-
         Button:
-            text: 'Suchen'
-            font_size: dp(11)
+            text: '|||'
+            font_size: dp(15)
             size_hint_x: None
-            width: dp(52)
+            width: dp(48)
             background_color: (.18, .18, .18, 1)
-            on_release: app.autodiscover()
+            on_release: app.open_connections()
 
-        Button:
-            text: 'QR'
-            font_size: dp(13)
-            size_hint_x: None
-            width: dp(38)
-            background_color: (.18, .18, .18, 1)
-            on_release: app.open_qr_scan()
-
-        Button:
-            text: 'OK'
-            font_size: dp(12)
-            size_hint_x: None
-            width: dp(40)
-            background_color: (.93, .4, .2, 1)
-            on_release: app.connect(server_input.text)
+        Label:
+            text: 'Ownly Audio'
+            font_size: dp(14)
+            bold: True
+            color: (.93, .4, .2, 1)
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.size
 
         StatusDot:
             id: status_dot
             size_hint_x: None
-            width: dp(14)
+            width: dp(20)
 
     # ── Search + offline filter ─────────────────────────────────────────────
     BoxLayout:
@@ -505,6 +526,10 @@ class StatusDot(Widget):
 
 
 class OwnlyRoot(BoxLayout):
+    pass
+
+
+class ConnectionsPopup(Popup):
     pass
 
 
@@ -745,6 +770,8 @@ class OwnlyApp(App):
         self._offline_only   = False
         self._expanded_bands  = set()
         self._expanded_albums = set()
+        self._current_addr   = ''
+        self._conn_popup     = None
 
         Clock.schedule_once(self._load_saved_host, 0)
         Clock.schedule_once(self._load_cached_ids, 0)
@@ -759,7 +786,7 @@ class OwnlyApp(App):
             with open(self._host_file(), 'r') as f:
                 saved = f.read().strip()
             if saved:
-                self._root.ids.server_input.text = saved
+                self._current_addr = saved
                 self.connect(saved)
         except Exception:
             pass
@@ -891,7 +918,9 @@ class OwnlyApp(App):
             Clock.schedule_once(lambda _: self._on_discover_fail())
 
     def _on_discovered(self, host_str):
-        self._root.ids.server_input.text = host_str
+        self._current_addr = host_str
+        if self._conn_popup and self._conn_popup._is_open:
+            self._conn_popup.ids.host_input.text = host_str
         self.connect(host_str)
 
     def _on_discover_fail(self):
@@ -907,6 +936,7 @@ class OwnlyApp(App):
 
     def connect(self, addr):
         addr = addr.strip()
+        self._current_addr = addr
         if ':' in addr:
             host, port = addr.rsplit(':', 1)
             self._server_host = host
@@ -987,9 +1017,8 @@ class OwnlyApp(App):
         self._root.ids.status_dot.dot_color = (.2, .9, .3, 1)
         n = len(tracks)
         self._root.ids.now_playing.text = f'✓ {n} Tracks geladen'
-        addr = self._root.ids.server_input.text.strip()
-        if addr:
-            self._save_host(addr)
+        if self._current_addr:
+            self._save_host(self._current_addr)
 
     def _on_error(self, msg):
         self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
@@ -1234,6 +1263,12 @@ class OwnlyApp(App):
 
     # ── QR scan ──────────────────────────────────────────────────────────────
 
+    def open_connections(self):
+        if self._conn_popup is None:
+            self._conn_popup = ConnectionsPopup()
+        self._conn_popup.ids.host_input.text = self._current_addr
+        self._conn_popup.open()
+
     def open_qr_scan(self):
         """Open QR scanner. On Android uses native ZXing intent, on desktop cv2 popup."""
         if platform == 'android':
@@ -1300,7 +1335,7 @@ class OwnlyApp(App):
             return
         host = m.group(1)
         addr = f'{host}:8767'
-        self._root.ids.server_input.text = addr
+        self._current_addr = addr
         self.connect(addr)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
