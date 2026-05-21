@@ -98,7 +98,7 @@ jobs:
       # ── Build ─────────────────────────────────────────────────────────────
       - name: Build APK
         env:
-          P4A_RELEASE_KEYSTORE: ${{ env.HOME }}/.android/debug.keystore
+          P4A_RELEASE_KEYSTORE: /home/runner/.android/debug.keystore
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.OWNLY_STORE_PASSWORD }}
           P4A_RELEASE_KEYALIAS: ${{ secrets.OWNLY_KEY_ALIAS }}
           P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.OWNLY_KEY_PASSWORD }}
