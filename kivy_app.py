@@ -682,6 +682,7 @@ class OwnlyApp(App):
                 saved = f.read().strip()
             if saved:
                 self._root.ids.server_input.text = saved
+                self.connect(saved)
         except Exception:
             pass
 
