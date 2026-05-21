@@ -22,7 +22,7 @@ android.gradle_dependencies = com.journeyapps:zxing-android-embedded:3.6.0, andr
 p4a.branch = v2024.01.21
 
 # ── Android ───────────────────────────────────────────────────────────────
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,CAMERA,READ_EXTERNAL_STORAGE
 android.api = 35
 android.minapi = 24
 android.archs = arm64-v8a

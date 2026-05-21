@@ -79,6 +79,189 @@ def _get_exo_listener_class():
     return _ExoListenerClass
 
 
+class EmbeddedServer:
+    """
+    Minimal SOAP + audio HTTP server + UDP broadcast.
+    No spyne/extra dependencies — pure stdlib.
+    Compatible with the existing _soap_request client.
+    """
+    SOAP_NS = 'http://ownly.audio/soap'
+    SOAP_ENV = 'http://schemas.xmlsoap.org/soap/envelope/'
+    SOAP_PORT = 8767
+
+    def __init__(self):
+        self._httpd = None
+        self._udp_running = False
+        self._tracks = []
+
+    @property
+    def is_running(self):
+        return self._httpd is not None
+
+    def local_ip(self):
+        import socket as _s
+        try:
+            s = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return '127.0.0.1'
+
+    def local_addr(self):
+        return f'{self.local_ip()}:{self.SOAP_PORT}'
+
+    def scan_tracks(self, music_dir):
+        """Scan music_dir recursively for MP3 files. Returns track list."""
+        import hashlib
+        from pathlib import Path
+        tracks = []
+        p = Path(music_dir)
+        if not p.is_dir():
+            return tracks
+        for mp3 in sorted(p.rglob('*.mp3')):
+            try:
+                sha1 = hashlib.sha1()
+                with open(str(mp3), 'rb') as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        sha1.update(chunk)
+                tracks.append({
+                    'band': mp3.parent.parent.name,
+                    'album': mp3.parent.name,
+                    'title': mp3.stem,
+                    'idx': len(tracks),
+                    'id': sha1.hexdigest(),
+                    'abs': str(mp3),
+                    'genre': '',
+                })
+            except Exception:
+                pass
+        return tracks
+
+    def start(self, music_dir, on_status=None):
+        """Start server in a daemon thread. on_status(msg) will be called on the Kivy main thread."""
+        if self.is_running:
+            return
+
+        def _status(msg):
+            if on_status:
+                Clock.schedule_once(lambda _, m=msg: on_status(m))
+
+        def _run():
+            _status('Scanne Musikverzeichnis …')
+            self._tracks = self.scan_tracks(music_dir)
+            _status(f'{len(self._tracks)} Tracks gefunden, starte Server …')
+
+            tracks_ref = self._tracks
+            soap_port = self.SOAP_PORT
+            local_ip = self.local_ip()
+            ns = self.SOAP_NS
+            env_ns = self.SOAP_ENV
+
+            class _Handler(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *a):
+                    pass
+
+                def do_GET(self):
+                    path = self.path.split('?')[0]
+                    if path.startswith('/audio/'):
+                        try:
+                            idx = int(path[7:])
+                            fp = tracks_ref[idx]['abs']
+                            size = os.path.getsize(fp)
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'audio/mpeg')
+                            self.send_header('Content-Length', str(size))
+                            self.send_header('Accept-Ranges', 'bytes')
+                            self.send_header('Access-Control-Allow-Origin', '*')
+                            self.end_headers()
+                            with open(fp, 'rb') as f:
+                                self.wfile.write(f.read())
+                        except Exception:
+                            self.send_response(404)
+                            self.end_headers()
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def do_POST(self):
+                    length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(length).decode('utf-8', errors='ignore')
+                    if 'GetTracks' in body:
+                        resp = self._tracks_xml()
+                    else:
+                        self.send_response(500)
+                        self.end_headers()
+                        return
+                    data = resp.encode('utf-8')
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/xml; charset=utf-8')
+                    self.send_header('Content-Length', str(len(data)))
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(data)
+
+                def _tracks_xml(self):
+                    def esc(s):
+                        return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    items = ''.join(
+                        f'<tns:TrackInfo>'
+                        f'<tns:idx>{t["idx"]}</tns:idx>'
+                        f'<tns:id>{esc(t["id"])}</tns:id>'
+                        f'<tns:band>{esc(t["band"])}</tns:band>'
+                        f'<tns:album>{esc(t["album"])}</tns:album>'
+                        f'<tns:title>{esc(t["title"])}</tns:title>'
+                        f'<tns:genre>{esc(t.get("genre", ""))}</tns:genre>'
+                        f'</tns:TrackInfo>'
+                        for t in tracks_ref
+                    )
+                    return (
+                        f'<?xml version="1.0" encoding="utf-8"?>'
+                        f'<soap:Envelope xmlns:soap="{env_ns}" xmlns:tns="{ns}">'
+                        f'<soap:Body>'
+                        f'<tns:GetTracksResponse>'
+                        f'<tns:GetTracksResult>{items}</tns:GetTracksResult>'
+                        f'</tns:GetTracksResponse>'
+                        f'</soap:Body>'
+                        f'</soap:Envelope>'
+                    )
+
+            try:
+                self._httpd = http.server.HTTPServer(('0.0.0.0', soap_port), _Handler)
+                self._udp_running = True
+                threading.Thread(target=self._udp_loop, daemon=True).start()
+                _status(f'Laeuft: {local_ip}:{soap_port} ({len(tracks_ref)} Tracks)')
+                self._httpd.serve_forever()
+            except Exception as e:
+                self._httpd = None
+                _status(f'Fehler: {e}')
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def stop(self):
+        self._udp_running = False
+        if self._httpd:
+            self._httpd.shutdown()
+            self._httpd = None
+
+    def _udp_loop(self):
+        import socket as _s
+        sock = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        sock.setsockopt(_s.SOL_SOCKET, _s.SO_BROADCAST, 1)
+        msg = f'OWNLY:{self.SOAP_PORT}'.encode()
+        while self._udp_running:
+            try:
+                sock.sendto(msg, ('<broadcast>', 8768))
+            except Exception:
+                pass
+            time.sleep(3)
+        sock.close()
+
+
 def _soap_request(host, port, method, **params):
     """
     Execute a SOAP 1.1 call and return the parsed XML root element.
@@ -251,6 +434,50 @@ KV = """
             pos: self.x + dp(1), self.center_y - dp(6)
             size: dp(12), dp(12)
 
+<ServerPopup>:
+    title: 'Mein Server'
+    size_hint: .92, None
+    height: dp(230)
+    auto_dismiss: True
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        padding: dp(12)
+        TextInput:
+            id: music_dir_input
+            hint_text: '/sdcard/Music'
+            font_size: dp(13)
+            multiline: False
+            background_color: (.18, .18, .18, 1)
+            foreground_color: (.9, .9, .9, 1)
+            cursor_color: (1, .5, .2, 1)
+        Button:
+            id: toggle_btn
+            text: 'Server starten'
+            font_size: dp(14)
+            size_hint_y: None
+            height: dp(44)
+            background_color: (.18, .55, .18, 1)
+            on_release: app.toggle_embedded_server(music_dir_input.text)
+        TextInput:
+            id: srv_status
+            text: 'Server gestoppt'
+            font_size: dp(12)
+            foreground_color: (.7, .7, .7, 1)
+            background_color: (0, 0, 0, 0)
+            size_hint_y: None
+            height: dp(28)
+            readonly: True
+            multiline: False
+            halign: 'center'
+        Button:
+            text: 'Selbst verbinden'
+            font_size: dp(13)
+            size_hint_y: None
+            height: dp(40)
+            background_color: (.93, .4, .2, 1)
+            on_release: app.connect_to_self(); root.dismiss()
+
 <ConnectionsPopup>:
     title: 'Verbindungen'
     size_hint: .92, .72
@@ -333,6 +560,14 @@ KV = """
             width: dp(48)
             background_color: (.18, .18, .18, 1)
             on_release: app.open_connections()
+
+        Button:
+            text: 'Srv'
+            font_size: dp(12)
+            size_hint_x: None
+            width: dp(44)
+            background_color: (.18, .55, .18, 1)
+            on_release: app.open_server_popup()
 
         Label:
             text: 'Ownly Audio'
@@ -546,6 +781,10 @@ class OwnlyRoot(BoxLayout):
 
 
 class ConnectionsPopup(Popup):
+    pass
+
+
+class ServerPopup(Popup):
     pass
 
 
@@ -797,8 +1036,11 @@ class OwnlyApp(App):
         self._current_addr   = ''
         self._servers        = []   # list of {'addr': '...'} dicts
         self._conn_popup     = None
+        self._embedded_server = EmbeddedServer()
+        self._server_popup    = None
 
         Clock.schedule_once(self._load_servers, 0)
+        Clock.schedule_once(self._load_server_music_dir, 0)
         Clock.schedule_once(self._load_saved_host, 0)
         Clock.schedule_once(self._load_cached_ids, 0)
         return self._root
@@ -872,6 +1114,23 @@ class OwnlyApp(App):
             row.add_widget(conn_btn)
             row.add_widget(rem_btn)
             sl.add_widget(row)
+
+    def _server_music_dir_file(self):
+        return os.path.join(self.user_data_dir, 'server_music_dir.txt')
+
+    def _load_server_music_dir(self, *_):
+        try:
+            with open(self._server_music_dir_file()) as f:
+                return f.read().strip()
+        except Exception:
+            return '/sdcard/Music'
+
+    def _save_server_music_dir(self, path):
+        try:
+            with open(self._server_music_dir_file(), 'w') as f:
+                f.write(path)
+        except Exception:
+            pass
 
     def _load_saved_host(self, *_):
         try:
@@ -1424,6 +1683,73 @@ class OwnlyApp(App):
         self._conn_popup.ids.host_input.text = ''
         self._populate_servers_list()
         self._conn_popup.open()
+
+    def open_server_popup(self):
+        if self._server_popup is None:
+            self._server_popup = ServerPopup()
+        saved_dir = self._load_server_music_dir()
+        self._server_popup.ids.music_dir_input.text = saved_dir
+        btn = self._server_popup.ids.toggle_btn
+        if self._embedded_server.is_running:
+            btn.text = 'Server stoppen'
+            btn.background_color = (.55, .18, .18, 1)
+        else:
+            btn.text = 'Server starten'
+            btn.background_color = (.18, .55, .18, 1)
+        self._server_popup.open()
+
+    def toggle_embedded_server(self, music_dir):
+        music_dir = music_dir.strip() or '/sdcard/Music'
+        self._save_server_music_dir(music_dir)
+
+        if self._embedded_server.is_running:
+            self._embedded_server.stop()
+            if self._server_popup:
+                self._server_popup.ids.toggle_btn.text = 'Server starten'
+                self._server_popup.ids.toggle_btn.background_color = (.18, .55, .18, 1)
+                self._server_popup.ids.srv_status.text = 'Server gestoppt'
+        else:
+            if platform == 'android':
+                self._request_storage_and_start(music_dir)
+            else:
+                self._start_embedded_server(music_dir)
+
+    def _request_storage_and_start(self, music_dir):
+        try:
+            from android.permissions import request_permissions, check_permission, Permission  # type: ignore
+            perm = getattr(Permission, 'READ_MEDIA_AUDIO', None) or Permission.READ_EXTERNAL_STORAGE
+            if check_permission(str(perm)):
+                self._start_embedded_server(music_dir)
+            else:
+                def _cb(permissions, grants):
+                    if grants and grants[0]:
+                        Clock.schedule_once(lambda _: self._start_embedded_server(music_dir))
+                    else:
+                        if self._server_popup:
+                            self._server_popup.ids.srv_status.text = 'Berechtigung verweigert'
+                request_permissions([str(perm)], _cb)
+        except ImportError:
+            self._start_embedded_server(music_dir)
+
+    def _start_embedded_server(self, music_dir):
+        def _on_status(msg):
+            if self._server_popup:
+                self._server_popup.ids.srv_status.text = msg
+            is_running = self._embedded_server.is_running
+            if self._server_popup:
+                btn = self._server_popup.ids.toggle_btn
+                if is_running:
+                    btn.text = 'Server stoppen'
+                    btn.background_color = (.55, .18, .18, 1)
+                else:
+                    btn.text = 'Server starten'
+                    btn.background_color = (.18, .55, .18, 1)
+        self._embedded_server.start(music_dir, on_status=_on_status)
+
+    def connect_to_self(self):
+        """Connect this client to the embedded server running on this device."""
+        addr = self._embedded_server.local_addr()
+        self.connect(addr)
 
     def open_qr_scan(self):
         """Open QR scanner. On Android uses native ZXing intent, on desktop cv2 popup."""
