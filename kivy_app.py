@@ -47,9 +47,11 @@ _SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
 # a Java proxy class by Python class name; redefining causes crashes).
 _AndroidCompletionListenerClass = None
 _AndroidPreparedListenerClass   = None
+_AndroidErrorListenerClass      = None
 
 def _get_android_listener_classes():
-    global _AndroidCompletionListenerClass, _AndroidPreparedListenerClass
+    global _AndroidCompletionListenerClass, _AndroidPreparedListenerClass, \
+           _AndroidErrorListenerClass
     if _AndroidCompletionListenerClass is None:
         from jnius import PythonJavaClass, java_method  # type: ignore
 
@@ -73,9 +75,23 @@ def _get_android_listener_classes():
             def onPrepared(self, _mp):
                 self._cb()
 
+        class _ErrorListener(PythonJavaClass):
+            __javainterfaces__ = ['android/media/MediaPlayer$OnErrorListener']
+            __javacontext__ = 'app'
+            def __init__(self, cb):
+                super().__init__()
+                self._cb = cb
+            @java_method('(Landroid/media/MediaPlayer;II)Z')
+            def onError(self, _mp, what, extra):
+                self._cb(what, extra)
+                return True   # True = error handled, suppress OnCompletion
+
         _AndroidCompletionListenerClass = _CompletionListener
         _AndroidPreparedListenerClass   = _PreparedListener
-    return _AndroidCompletionListenerClass, _AndroidPreparedListenerClass
+        _AndroidErrorListenerClass      = _ErrorListener
+    return (_AndroidCompletionListenerClass,
+            _AndroidPreparedListenerClass,
+            _AndroidErrorListenerClass)
 
 
 def _soap_request(host, port, method, **params):
@@ -1092,7 +1108,7 @@ class OwnlyApp(App):
             MediaPlayer = autoclass('android.media.MediaPlayer')
             mp = MediaPlayer()
 
-            CompClass, PrepClass = _get_android_listener_classes()
+            CompClass, PrepClass, ErrClass = _get_android_listener_classes()
 
             self._mp_listener = CompClass(
                 lambda: Clock.schedule_once(lambda _dt: self._auto_next())
@@ -1100,9 +1116,15 @@ class OwnlyApp(App):
             self._mp_prepared = PrepClass(
                 lambda: Clock.schedule_once(lambda _dt: self._play_mediaplayer(mp, label))
             )
+            self._mp_error = ErrClass(
+                lambda what, extra: Clock.schedule_once(
+                    lambda _dt: self._on_play_error(f'MediaPlayer Fehler {what}/{extra}')
+                )
+            )
 
             mp.setOnCompletionListener(self._mp_listener)
             mp.setOnPreparedListener(self._mp_prepared)
+            mp.setOnErrorListener(self._mp_error)
             mp.setDataSource(url)
             mp.prepareAsync()   # non-blocking — fires OnPreparedListener when ready
         except Exception as e:
