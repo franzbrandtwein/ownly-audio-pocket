@@ -161,7 +161,7 @@ KV = """
     bar_width: dp(4)
     bar_color: (.93, .4, .2, .8)
     RecycleBoxLayout:
-        default_size: None, None
+        default_size: None, dp(54)
         default_size_hint: 1, None
         size_hint_y: None
         height: self.minimum_height
@@ -618,6 +618,7 @@ class OwnlyApp(App):
     def _build_grouped_data(self, tracks):
         """Build flat list with BandHeader / AlbumHeader / TrackRow entries."""
         from collections import OrderedDict
+        from kivy.metrics import dp
         grouped = OrderedDict()
         for t in tracks:
             band  = t.get('band', '?')
@@ -626,11 +627,11 @@ class OwnlyApp(App):
 
         result = []
         for band, albums in grouped.items():
-            result.append({'viewclass': 'BandHeader', 'band': band})
+            result.append({'viewclass': 'BandHeader',  'band': band,  'height': dp(38)})
             for album, album_tracks in albums.items():
-                result.append({'viewclass': 'AlbumHeader', 'album': album})
+                result.append({'viewclass': 'AlbumHeader', 'album': album, 'height': dp(30)})
                 for t in album_tracks:
-                    result.append(dict(t, viewclass='TrackRow'))
+                    result.append(dict(t, viewclass='TrackRow', height=dp(54)))
         return result
 
     def _set_list_data(self, tracks):
