@@ -1,7 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for Kivy desktop app (Windows + Linux)
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import os
+import importlib.util
+from PyInstaller.utils.hooks import collect_data_files
+
+# Use kivy's own bundled PyInstaller hooks instead of collect_submodules
+_kivy_origin = importlib.util.find_spec('kivy').origin
+_kivy_dir = os.path.dirname(_kivy_origin)
+_kivy_hooks = os.path.join(_kivy_dir, 'tools', 'packaging', 'pyinstaller_hooks')
 
 if sys.platform == 'win32':
     from kivy_deps import sdl2, glew
@@ -17,21 +24,19 @@ a = Analysis(
         collect_data_files('kivy') +
         [('icon.png', '.')]
     ),
-    hiddenimports=(
-        collect_submodules('kivy') +
-        [
-            'kivy.core.audio.audio_sdl2',
-            'kivy.core.audio.audio_gstreamer',
-            'kivy.core.window.window_sdl2',
-            'kivy.core.text.text_sdl2',
-            'kivy.core.image.img_sdl2',
-            'kivy.core.image.img_pil',
-            'kivy.core.clipboard.clipboard_sdl2',
-            'kivy.graphics.cgl_backend.cgl_glew',
-            'kivy.graphics.cgl_backend.cgl_sdl2',
-        ]
-    ),
-    hookspath=[],
+    hiddenimports=[
+        'kivy.core.audio.audio_sdl2',
+        'kivy.core.audio.audio_gstreamer',
+        'kivy.core.window.window_sdl2',
+        'kivy.core.text.text_sdl2',
+        'kivy.core.image.img_sdl2',
+        'kivy.core.image.img_pil',
+        'kivy.core.clipboard.clipboard_sdl2',
+        'kivy.graphics.cgl_backend.cgl_glew',
+        'kivy.graphics.cgl_backend.cgl_sdl2',
+        'kivy.core.camera.camera_opencv',
+    ],
+    hookspath=[h for h in [_kivy_hooks] if os.path.isdir(h)],
     runtime_hooks=[],
     excludes=['tkinter', 'PyQt5', 'PyQt6', 'PySide2', 'PySide6'],
     cipher=None,
