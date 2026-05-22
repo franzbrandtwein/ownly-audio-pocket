@@ -1389,12 +1389,15 @@ class OwnlyApp(App):
             self._root.ids.now_playing.text = '⏳ Verbinde …'
         except Exception:
             pass
-        threading.Thread(target=self._do_connect, daemon=True).start()
+        threading.Thread(
+            target=self._do_connect,
+            args=(self._server_host, self._soap_port, addr),
+            daemon=True,
+        ).start()
 
-    def _do_connect(self):
-        addr = self._current_addr
+    def _do_connect(self, host, port, addr):
         try:
-            root = _soap_request(self._server_host, self._soap_port, 'GetTracks')
+            root = _soap_request(host, port, 'GetTracks')
             tracks = []
             for item in root.iter(f'{{{_SOAP_NS}}}TrackInfo'):
                 tracks.append({
@@ -1409,7 +1412,7 @@ class OwnlyApp(App):
                 })
             Clock.schedule_once(lambda _: self._on_connected(tracks))
         except BaseException as e:
-            msg = str(e) or type(e).__name__
+            msg = f'{host}:{port} → {str(e) or type(e).__name__}'
             Clock.schedule_once(lambda _: self._on_error(msg))
 
     def _build_grouped_data(self, tracks):
