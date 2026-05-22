@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-20.04  # glibc 2.31 — kompatibel mit älteren Distros
+    runs-on: ubuntu-22.04  # glibc 2.35 — älteste verfügbare Ubuntu-Version bei GitHub Actions
     steps:
       - uses: actions/checkout@v4
 
@@ -18,7 +18,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 libdbus-1-3 \
+          sudo apt-get install -y libgl1 libglib2.0-0 libdbus-1-3 \
             libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
             libxcb-xinerama0 libxcb-xfixes0
