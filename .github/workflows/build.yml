@@ -36,16 +36,16 @@ jobs:
 
       - name: Create AppDir
         run: |
-          mkdir -p AppDir/usr/share/applications \
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications \
                    AppDir/usr/share/icons/hicolor/256x256/apps
-          cp -r dist/ownly-audio-pocket AppDir/usr/bin
+          cp dist/ownly-audio-pocket AppDir/usr/bin/ownly-audio-pocket
           printf '[Desktop Entry]\nName=Ownly Audio Pocket\nExec=ownly-audio-pocket\nIcon=ownly-audio-pocket\nType=Application\nCategories=Audio;Music;Player;\n' \
             > AppDir/ownly-audio-pocket.desktop
           cp icon.png AppDir/ownly-audio-pocket.png
           cp icon.png AppDir/usr/share/icons/hicolor/256x256/apps/ownly-audio-pocket.png
           cp AppDir/ownly-audio-pocket.desktop AppDir/usr/share/applications/
-          printf '#!/bin/bash\nexec "$APPDIR/usr/bin/ownly-audio-pocket/ownly-audio-pocket" "$@"\n' > AppDir/AppRun
-          chmod +x AppDir/AppRun AppDir/usr/bin/ownly-audio-pocket/ownly-audio-pocket
+          printf '#!/bin/bash\nexec "$APPDIR/usr/bin/ownly-audio-pocket" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
 
       - name: Download appimagetool
         run: |
@@ -80,19 +80,19 @@ jobs:
       - name: Install dependencies
         run: pip install "kivy[base]" kivy_deps.sdl2 kivy_deps.glew pyinstaller mutagen opencv-python-headless
 
-      - name: Build (onedir)
+      - name: Build
         run: |
           python -m PyInstaller kivy_app.spec `
             --distpath dist --workpath C:\tmp\build --noconfirm
 
-      - name: Zip distribution
+      - name: Rename binary
         shell: pwsh
-        run: Compress-Archive -Path dist\ownly-audio-pocket -DestinationPath ownly-audio-pocket-windows.zip
+        run: Rename-Item dist\ownly-audio-pocket.exe ownly-audio-pocket-windows.exe
 
       - uses: actions/upload-artifact@v4
         with:
           name: ownly-audio-pocket-windows
-          path: ownly-audio-pocket-windows.zip
+          path: dist\ownly-audio-pocket-windows.exe
 
   release:
     needs: [build-linux, build-windows]
@@ -112,4 +112,4 @@ jobs:
           body: "Automatisch gebaut aus Commit ${{ github.sha }}"
           files: |
             artifacts/ownly-audio-pocket-linux/ownly-audio-pocket.AppImage
-            artifacts/ownly-audio-pocket-windows/ownly-audio-pocket-windows.zip
+            artifacts/ownly-audio-pocket-windows/ownly-audio-pocket-windows.exe
