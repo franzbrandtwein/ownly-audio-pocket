@@ -230,14 +230,18 @@ class EmbeddedServer:
                         f'</soap:Envelope>'
                     )
 
+            class _ReuseServer(http.server.HTTPServer):
+                allow_reuse_address = True
+
             try:
-                self._httpd = http.server.HTTPServer(('0.0.0.0', soap_port), _Handler)
+                self._httpd = _ReuseServer(('0.0.0.0', soap_port), _Handler)
                 self._udp_running = True
                 threading.Thread(target=self._udp_loop, daemon=True).start()
                 _status(f'Laeuft: {local_ip}:{soap_port} ({len(tracks_ref)} Tracks)')
                 self._httpd.serve_forever()
             except Exception as e:
                 self._httpd = None
+                import traceback; traceback.print_exc()
                 _status(f'Fehler: {e}')
 
         threading.Thread(target=_run, daemon=True).start()
