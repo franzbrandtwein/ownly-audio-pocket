@@ -7,37 +7,56 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04  # glibc 2.31 — kompatibel mit älteren Distros
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      - name: Install dependencies
-        run: pip install pyinstaller mutagen cryptography PyQt5 qrcode[pil]
-
-      - name: Install Qt system libs
+      - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libgl1 libglib2.0-0 libdbus-1-3 \
+          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 libdbus-1-3 \
             libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
             libxcb-xinerama0 libxcb-xfixes0
 
-      - name: Build
-        run: |
-          python -m PyInstaller ownly.spec \
-            --distpath dist --workpath /tmp/build --noconfirm
+      - name: Install Python dependencies
+        run: pip install pyinstaller mutagen cryptography PyQt5 qrcode[pil]
 
-      - name: Rename binary
-        run: mv dist/ownly-audio-pocket dist/ownly-audio-pocket-linux
+      - name: Build with PyInstaller
+        run: python -m PyInstaller ownly.spec --distpath dist --workpath /tmp/build --noconfirm
+
+      - name: Create AppDir
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications \
+                   AppDir/usr/share/icons/hicolor/256x256/apps
+          cp dist/ownly-audio-pocket AppDir/usr/bin/ownly-audio-pocket
+          printf '[Desktop Entry]\nName=Ownly Audio Pocket\nExec=ownly-audio-pocket\nIcon=ownly-audio-pocket\nType=Application\nCategories=Audio;Music;Player;\n' \
+            > AppDir/ownly-audio-pocket.desktop
+          cp icon.png AppDir/ownly-audio-pocket.png
+          cp icon.png AppDir/usr/share/icons/hicolor/256x256/apps/ownly-audio-pocket.png
+          cp AppDir/ownly-audio-pocket.desktop AppDir/usr/share/applications/
+          printf '#!/bin/bash\nexec "$APPDIR/usr/bin/ownly-audio-pocket" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+
+      - name: Download appimagetool
+        run: |
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+      - name: Build AppImage
+        env:
+          ARCH: x86_64
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: ./appimagetool-x86_64.AppImage AppDir ownly-audio-pocket.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
           name: ownly-audio-pocket-linux
-          path: dist/ownly-audio-pocket-linux
+          path: ownly-audio-pocket.AppImage
 
   build-windows:
     runs-on: windows-latest
@@ -82,5 +101,5 @@ jobs:
           name: "Build #${{ github.run_number }}"
           body: "Automatisch gebaut aus Commit ${{ github.sha }}"
           files: |
-            artifacts/ownly-audio-pocket-linux/ownly-audio-pocket-linux
+            artifacts/ownly-audio-pocket-linux/ownly-audio-pocket.AppImage
             artifacts/ownly-audio-pocket-windows/ownly-audio-pocket-windows.exe
