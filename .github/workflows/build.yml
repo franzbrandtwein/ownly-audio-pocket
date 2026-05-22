@@ -32,6 +32,10 @@ jobs:
           pip install "kivy[base]" pyinstaller mutagen opencv-python-headless
 
       - name: Build with PyInstaller
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          KIVY_NO_ENV_CONFIG: "1"
         run: python3 -m PyInstaller kivy_app.spec --distpath dist --workpath /tmp/build --noconfirm
 
       - name: Create AppDir
@@ -89,6 +93,10 @@ jobs:
         run: pip install "kivy[base]" kivy_deps.sdl2 kivy_deps.glew pyinstaller mutagen opencv-python-headless
 
       - name: Build
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          KIVY_NO_ENV_CONFIG: "1"
         run: |
           python -m PyInstaller kivy_app.spec `
             --distpath dist --workpath C:\tmp\build --noconfirm
