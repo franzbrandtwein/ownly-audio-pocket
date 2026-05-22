@@ -27,7 +27,9 @@ jobs:
             libxcb-xinerama0 libxcb-xfixes0
 
       - name: Install Python packages
-        run: pip3 install pyinstaller mutagen cryptography "PyQt5==5.15.10" qrcode[pil]
+        run: |
+          pip3 install --upgrade pip
+          pip install pyinstaller mutagen cryptography "PyQt5==5.15.10" qrcode[pil]
 
       - name: Build with PyInstaller
         run: python3 -m PyInstaller ownly.spec --distpath dist --workpath /tmp/build --noconfirm
