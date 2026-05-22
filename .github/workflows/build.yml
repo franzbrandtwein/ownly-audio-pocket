@@ -36,16 +36,16 @@ jobs:
 
       - name: Create AppDir
         run: |
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications \
+          mkdir -p AppDir/usr/share/applications \
                    AppDir/usr/share/icons/hicolor/256x256/apps
-          cp dist/ownly-audio-pocket AppDir/usr/bin/ownly-audio-pocket
+          cp -r dist/ownly-audio-pocket AppDir/usr/bin
           printf '[Desktop Entry]\nName=Ownly Audio Pocket\nExec=ownly-audio-pocket\nIcon=ownly-audio-pocket\nType=Application\nCategories=Audio;Music;Player;\n' \
             > AppDir/ownly-audio-pocket.desktop
           cp icon.png AppDir/ownly-audio-pocket.png
           cp icon.png AppDir/usr/share/icons/hicolor/256x256/apps/ownly-audio-pocket.png
           cp AppDir/ownly-audio-pocket.desktop AppDir/usr/share/applications/
-          printf '#!/bin/bash\nexec "$APPDIR/usr/bin/ownly-audio-pocket" "$@"\n' > AppDir/AppRun
-          chmod +x AppDir/AppRun
+          printf '#!/bin/bash\nexec "$APPDIR/usr/bin/ownly-audio-pocket/ownly-audio-pocket" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun AppDir/usr/bin/ownly-audio-pocket/ownly-audio-pocket
 
       - name: Download appimagetool
         run: |
@@ -80,10 +80,10 @@ jobs:
       - name: Install dependencies
         run: pip install "kivy[base]" kivy_deps.sdl2 kivy_deps.glew pyinstaller mutagen opencv-python-headless
 
-      - name: Build (onedir mode)
+      - name: Build (onedir)
         run: |
           python -m PyInstaller kivy_app.spec `
-            --onedir --distpath dist --workpath C:\tmp\build --noconfirm
+            --distpath dist --workpath C:\tmp\build --noconfirm
 
       - name: Zip distribution
         shell: pwsh

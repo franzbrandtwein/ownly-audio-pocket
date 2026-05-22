@@ -48,17 +48,22 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    *_win_trees,
     name='ownly-audio-pocket',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=sys.platform != 'win32',   # UPX hängt bei kivy-DLLs auf Windows
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     icon='icon.png',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    *_win_trees,
+    strip=False,
+    upx=False,
+    name='ownly-audio-pocket',
 )
