@@ -76,6 +76,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+
+      - name: Cache PyInstaller workdir
+        uses: actions/cache@v4
+        with:
+          path: C:\tmp\build
+          key: pyinstaller-win-${{ hashFiles('kivy_app.spec') }}
+          restore-keys: pyinstaller-win-
 
       - name: Install dependencies
         run: pip install "kivy[base]" kivy_deps.sdl2 kivy_deps.glew pyinstaller mutagen opencv-python-headless
