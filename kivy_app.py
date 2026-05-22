@@ -1042,8 +1042,9 @@ class OwnlyApp(App):
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
-        Clock.schedule_once(self._load_saved_host, 0)
         Clock.schedule_once(self._load_cached_ids, 0)
+        # Delay startup connect so Android finishes rendering the widget tree
+        Clock.schedule_once(self._load_saved_host, 1.0)
         return self._root
 
     def _host_file(self):
@@ -1330,8 +1331,11 @@ class OwnlyApp(App):
             self._soap_port   = int(port)
         else:
             self._server_host = addr
-        self._root.ids.status_dot.dot_color = (.9, .7, .1, 1)  # yellow = connecting
-        self._root.ids.now_playing.text = '⏳ Verbinde …'
+        try:
+            self._root.ids.status_dot.dot_color = (.9, .7, .1, 1)
+            self._root.ids.now_playing.text = '⏳ Verbinde …'
+        except Exception:
+            pass
         threading.Thread(target=self._do_connect, daemon=True).start()
 
     def _do_connect(self):
@@ -1349,8 +1353,9 @@ class OwnlyApp(App):
                     'is_active': False,
                 })
             Clock.schedule_once(lambda _: self._on_connected(tracks))
-        except Exception as e:
-            Clock.schedule_once(lambda _: self._on_error(str(e)))
+        except BaseException as e:
+            msg = str(e) or type(e).__name__
+            Clock.schedule_once(lambda _: self._on_error(msg))
 
     def _build_grouped_data(self, tracks):
         """Build flat list with BandHeader / AlbumHeader / TrackRow entries."""
@@ -1408,8 +1413,11 @@ class OwnlyApp(App):
             self._save_host(self._current_addr)
 
     def _on_error(self, msg):
-        self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
-        self._root.ids.now_playing.text = f'❌ {msg[:70]}'
+        try:
+            self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
+            self._root.ids.now_playing.text = f'❌ {msg[:70]}'
+        except Exception:
+            pass
 
     # ── Search / filter ─────────────────────────────────────────────────────
 
