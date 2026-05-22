@@ -1339,18 +1339,20 @@ class OwnlyApp(App):
         threading.Thread(target=self._do_connect, daemon=True).start()
 
     def _do_connect(self):
+        addr = self._current_addr
         try:
             root = _soap_request(self._server_host, self._soap_port, 'GetTracks')
             tracks = []
             for item in root.iter(f'{{{_SOAP_NS}}}TrackInfo'):
                 tracks.append({
-                    'idx':       int(_soap_text(item, 'idx') or 0),
-                    'track_id':  _soap_text(item, 'id'),
-                    'title':     _soap_text(item, 'title'),
-                    'band':      _soap_text(item, 'band'),
-                    'album':     _soap_text(item, 'album'),
-                    'genre':     _soap_text(item, 'genre'),
-                    'is_active': False,
+                    'idx':        int(_soap_text(item, 'idx') or 0),
+                    'track_id':   _soap_text(item, 'id'),
+                    'title':      _soap_text(item, 'title'),
+                    'band':       _soap_text(item, 'band'),
+                    'album':      _soap_text(item, 'album'),
+                    'genre':      _soap_text(item, 'genre'),
+                    'is_active':  False,
+                    'server_addr': addr,   # track which server this came from
                 })
             Clock.schedule_once(lambda _: self._on_connected(tracks))
         except BaseException as e:
@@ -1419,6 +1421,24 @@ class OwnlyApp(App):
         except Exception:
             pass
 
+    def _on_server_gone(self, server_addr):
+        """Remove all tracks from an unreachable server, then play next available."""
+        self._all_tracks = [t for t in self._all_tracks if t.get('server_addr') != server_addr]
+        self._apply_filters()   # rebuilds _filtered from _all_tracks
+        try:
+            self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
+            n = len(self._all_tracks)
+            if n:
+                self._root.ids.now_playing.text = f'❌ {server_addr} offline – {n} Tracks verbleibend'
+            else:
+                self._root.ids.now_playing.text = f'❌ {server_addr} offline – keine Tracks mehr'
+        except Exception:
+            pass
+        if self._filtered:
+            self._auto_next()
+        else:
+            self._reset_progress()
+
     # ── Search / filter ─────────────────────────────────────────────────────
 
     def filter_tracks(self, query):
@@ -1462,6 +1482,7 @@ class OwnlyApp(App):
             self._tmp_file = None
 
         # Use local cached file if available, otherwise stream from server
+        server_addr = track.get('server_addr', self._current_addr)
         local_path = self._cache_path(track.get('track_id', ''))
         if track.get('track_id') and os.path.isfile(local_path):
             url = local_path
@@ -1475,7 +1496,7 @@ class OwnlyApp(App):
                 self._root.ids.now_playing.text = f'⏳ Lade {label} …'
                 threading.Thread(
                     target=self._download_then_play_android,
-                    args=(url, label),
+                    args=(url, label, server_addr),
                     daemon=True
                 ).start()
             else:
@@ -1483,11 +1504,11 @@ class OwnlyApp(App):
         else:
             threading.Thread(
                 target=self._fetch_and_play,
-                args=(url, label),
+                args=(url, label, server_addr),
                 daemon=True
             ).start()
 
-    def _download_then_play_android(self, url, label):
+    def _download_then_play_android(self, url, label, server_addr):
         """Android: download via urllib to temp file, then play locally via ExoPlayer."""
         try:
             tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
@@ -1507,6 +1528,12 @@ class OwnlyApp(App):
             tmp.close()
             self._tmp_file = tmp_path
             Clock.schedule_once(lambda _: self._setup_exoplayer(tmp_path, label))
+        except urllib.error.HTTPError as e:
+            # Server reachable but track missing/broken — skip to next
+            Clock.schedule_once(lambda _: self._on_play_error(f'HTTP {e.code}: {label[:40]}'))
+        except (urllib.error.URLError, OSError, ConnectionError, TimeoutError):
+            # Server unreachable — remove all its tracks
+            Clock.schedule_once(lambda _: self._on_server_gone(server_addr))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 
@@ -1598,7 +1625,7 @@ class OwnlyApp(App):
         self._root.ids.progress_bar.value = 0
         self._root.ids.time_label.text = ''
 
-    def _fetch_and_play(self, url, label):
+    def _fetch_and_play(self, url, label, server_addr):
         """Desktop: download to temp file, then load and play."""
         try:
             tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
@@ -1611,6 +1638,10 @@ class OwnlyApp(App):
             # Load in background thread to keep main thread free
             sound = SoundLoader.load(tmp_path)
             Clock.schedule_once(lambda _: self._play_file(sound, label))
+        except urllib.error.HTTPError as e:
+            Clock.schedule_once(lambda _: self._on_play_error(f'HTTP {e.code}: {label[:40]}'))
+        except (urllib.error.URLError, OSError, ConnectionError, TimeoutError):
+            Clock.schedule_once(lambda _: self._on_server_gone(server_addr))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
 
