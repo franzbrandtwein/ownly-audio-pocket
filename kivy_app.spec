@@ -56,7 +56,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=sys.platform != 'win32',   # UPX hängt bei kivy-DLLs auf Windows
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
