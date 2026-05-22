@@ -1012,11 +1012,15 @@ class OwnlyApp(App):
     def _build_inner(self):
         Builder.load_string(KV)
         self._root = OwnlyRoot()
+        from kivy.core.window import Window
         if platform == 'android':
-            from kivy.core.window import Window
             Window.softinput_mode = 'below_target'
             from kivy.clock import Clock as _Clock
             _Clock.schedule_once(self._apply_android_insets, 0.5)
+        else:
+            Window.size = (420, 750)
+            Window.minimum_width = 320
+            Window.minimum_height = 500
 
         self._all_tracks    = []
         self._filtered      = []
