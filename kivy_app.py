@@ -1165,6 +1165,52 @@ class OwnlyApp(App):
     def _cache_path(self, track_id):
         return os.path.join(self._cache_dir(), str(track_id))
 
+    def _cache_meta_file(self):
+        return os.path.join(self.user_data_dir, 'cached_tracks_meta.json')
+
+    def _save_track_meta(self, tracks):
+        """Persist track metadata so cached tracks survive server disconnects/restarts."""
+        try:
+            existing = {}
+            try:
+                with open(self._cache_meta_file()) as f:
+                    existing = {t['track_id']: t for t in json.load(f) if t.get('track_id')}
+            except Exception:
+                pass
+            for t in tracks:
+                tid = t.get('track_id')
+                if tid:
+                    existing[tid] = {k: t[k] for k in
+                                     ('idx', 'title', 'band', 'album', 'track_id', 'server_addr')
+                                     if k in t}
+            with open(self._cache_meta_file(), 'w') as f:
+                json.dump(list(existing.values()), f)
+        except Exception:
+            pass
+
+    def _load_offline_tracks(self):
+        """Populate _all_tracks with locally cached tracks (runs at startup)."""
+        if not self._cached_ids:
+            return
+        try:
+            with open(self._cache_meta_file()) as f:
+                all_meta = json.load(f)
+        except Exception:
+            return
+        cached_tracks = [
+            dict(t, is_active=False)
+            for t in all_meta
+            if t.get('track_id') in self._cached_ids
+        ]
+        if cached_tracks:
+            self._all_tracks = cached_tracks
+            self._filtered   = list(cached_tracks)
+            n = len(cached_tracks)
+            Clock.schedule_once(lambda _: self._set_list_data(self._filtered))
+            Clock.schedule_once(lambda _: setattr(
+                self._root.ids.now_playing, 'text',
+                f'📁 {n} Tracks offline verfügbar'))
+
     def _load_cached_ids(self, *_):
         d = os.path.join(self.user_data_dir, 'tracks')
         if os.path.isdir(d):
@@ -1174,6 +1220,7 @@ class OwnlyApp(App):
             }
         else:
             self._cached_ids = set()
+        self._load_offline_tracks()
 
     def download_track_by_id(self, idx, track_id):
         if not track_id or track_id in self._cached_ids:
@@ -1409,14 +1456,18 @@ class OwnlyApp(App):
         self._root.ids.track_list.data = self._build_grouped_data(tracks)
 
     def _on_connected(self, tracks):
-        self._all_tracks = tracks
-        self._filtered   = list(tracks)
+        addr = tracks[0]['server_addr'] if tracks else self._current_addr
+        # Keep tracks from other sources (different server or offline-only cached)
+        other_tracks = [t for t in self._all_tracks if t.get('server_addr') != addr]
+        self._all_tracks = other_tracks + tracks
+        self._filtered   = list(self._all_tracks)
         self._set_list_data(self._filtered)
         self._root.ids.status_dot.dot_color = (.2, .9, .3, 1)
         n = len(tracks)
         self._root.ids.now_playing.text = f'✓ {n} Tracks geladen'
         if self._current_addr:
             self._save_host(self._current_addr)
+        self._save_track_meta(tracks)
 
     def _on_error(self, msg):
         try:
@@ -1426,8 +1477,12 @@ class OwnlyApp(App):
             pass
 
     def _on_server_gone(self, server_addr):
-        """Remove all tracks from an unreachable server, then play next available."""
-        self._all_tracks = [t for t in self._all_tracks if t.get('server_addr') != server_addr]
+        """Remove non-cached tracks from unreachable server; keep locally cached ones."""
+        self._all_tracks = [
+            t for t in self._all_tracks
+            if t.get('server_addr') != server_addr
+            or t.get('track_id') in self._cached_ids
+        ]
         self._apply_filters()   # rebuilds _filtered from _all_tracks
         try:
             self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
