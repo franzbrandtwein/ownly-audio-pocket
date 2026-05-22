@@ -1024,6 +1024,7 @@ class OwnlyApp(App):
         self._sound          = None
         self._old_sound      = None
         self._shuffle        = False
+        self._exo_playing    = False   # track ExoPlayer play/pause state
         self._mp_listener    = None
         self._progress_clock = None
         self._server_host    = ''
@@ -1528,6 +1529,13 @@ class OwnlyApp(App):
 
             player = ExoPlayerBuilder(PythonActivity.mActivity).build()
 
+            # Hold a CPU wake lock so audio keeps playing with screen off.
+            try:
+                PowerManager = autoclass('android.os.PowerManager')
+                player.setWakeMode(PythonActivity.mActivity, PowerManager.PARTIAL_WAKE_LOCK)
+            except Exception:
+                pass
+
             ExoListenerClass = _get_exo_listener_class()
             self._mp_listener = ExoListenerClass(
                 lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
@@ -1539,6 +1547,7 @@ class OwnlyApp(App):
             player.setMediaItem(MediaItem.fromUri(media_url))
             player.prepare()
             player.play()   # playWhenReady=true → plays as soon as buffered
+            self._exo_playing = True
 
             self._sound = player
             self._root.ids.now_playing.text = f'> {label}'
@@ -1608,11 +1617,13 @@ class OwnlyApp(App):
             self._root.ids.play_btn.text = '>'
 
     def _on_play_error(self, msg):
+        self._exo_playing = False
         self._reset_progress()
         self._root.ids.now_playing.text = f'❌ {msg[:60]}'
         self._root.ids.play_btn.text = '>'
 
     def _on_track_ended(self, *_):
+        self._exo_playing = False
         Clock.schedule_once(lambda _: self._auto_next())
 
     def _auto_next(self):
@@ -1631,18 +1642,20 @@ class OwnlyApp(App):
         self.play_idx(nxt['idx'])
 
     def _exo_pause_resume(self):
-        """Pause or resume ExoPlayer."""
+        """Pause or resume ExoPlayer. Uses tracked boolean — avoids isPlaying() jnius issues."""
         try:
-            if self._sound.isPlaying():
+            if self._exo_playing:
                 self._sound.pause()
+                self._exo_playing = False
                 self._stop_progress_clock()
                 self._root.ids.play_btn.text = '>'
             else:
                 self._sound.play()
+                self._exo_playing = True
                 self._start_progress_clock()
                 self._root.ids.play_btn.text = '||'
         except Exception as e:
-            self._root.ids.now_playing.text = f'❌ {e}'
+            self._root.ids.now_playing.text = f'❌ pause: {e}'
 
     def toggle_play(self):
         if not self._sound:
@@ -1826,6 +1839,13 @@ class OwnlyApp(App):
             t['is_active'] = (t['idx'] == self._active_srv_idx)
         # Rebuild grouped data so is_active is reflected in TrackRow entries
         self._set_list_data(self._filtered)
+
+    def on_pause(self):
+        """Android back/home button: keep running so audio continues in background."""
+        return True
+
+    def on_resume(self):
+        pass
 
     def on_stop(self):
         if self._sound:
