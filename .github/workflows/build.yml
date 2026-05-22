@@ -64,7 +64,7 @@ jobs:
           path: ownly-audio-pocket.AppImage
 
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 90
     steps:
       - name: Disable Windows Defender realtime scan
