@@ -437,7 +437,7 @@ KV = """
 <ServerPopup>:
     title: 'Mein Server'
     size_hint: .92, None
-    height: dp(230)
+    height: dp(280)
     auto_dismiss: True
     BoxLayout:
         orientation: 'vertical'
@@ -448,6 +448,8 @@ KV = """
             hint_text: '/sdcard/Music'
             font_size: dp(13)
             multiline: False
+            size_hint_y: None
+            height: dp(44)
             background_color: (.18, .18, .18, 1)
             foreground_color: (.9, .9, .9, 1)
             cursor_color: (1, .5, .2, 1)
