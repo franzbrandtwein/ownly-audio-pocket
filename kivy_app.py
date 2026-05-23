@@ -1206,6 +1206,7 @@ class OwnlyApp(App):
         self._tmp_file       = None
         self._dl_wake_lock   = None   # PARTIAL_WAKE_LOCK held during background downloads
         self._proxy          = None   # _LocalProxy instance for current stream
+        self._wifi_lock      = None   # WiFi lock — keeps radio on during streaming
         self._cached_ids     = set()
         self._offline_only   = False
         self._expanded_bands  = set()
@@ -1706,6 +1707,29 @@ class OwnlyApp(App):
 
     # ── Playback ─────────────────────────────────────────────────────────────
 
+    def _acquire_wifi_lock(self):
+        """Keep WiFi radio awake so streaming proxy doesn't lose connection."""
+        try:
+            from jnius import autoclass as _ac  # type: ignore
+            WifiManager = _ac('android.net.wifi.WifiManager')
+            PythonActivity = _ac('org.kivy.android.PythonActivity')
+            wm = PythonActivity.mActivity.getSystemService(
+                PythonActivity.mActivity.WIFI_SERVICE)
+            if self._wifi_lock is None:
+                self._wifi_lock = wm.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL, 'OwnlyAudioPocket::Stream')
+            if not self._wifi_lock.isHeld():
+                self._wifi_lock.acquire()
+        except Exception:
+            pass
+
+    def _release_wifi_lock(self):
+        try:
+            if self._wifi_lock and self._wifi_lock.isHeld():
+                self._wifi_lock.release()
+        except Exception:
+            pass
+
     def play_idx(self, server_idx):
         """Start playing the track identified by server-side idx."""
         self._active_srv_idx = server_idx
@@ -1832,6 +1856,7 @@ class OwnlyApp(App):
 
     def _setup_exoplayer(self, url, label):
         """Main-thread: release old player, create ExoPlayer, prepare and play."""
+        self._acquire_wifi_lock()  # keep WiFi radio on for proxy streaming
         try:
             from jnius import autoclass  # type: ignore
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -2190,6 +2215,7 @@ class OwnlyApp(App):
         pass
 
     def on_stop(self):
+        self._release_wifi_lock()
         if self._proxy:
             self._proxy.stop()
             self._proxy = None
