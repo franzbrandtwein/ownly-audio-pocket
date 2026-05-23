@@ -15,6 +15,7 @@ import os
 import re
 import time
 import json
+import socket
 import http.server
 import urllib.request
 import urllib.error
@@ -45,6 +46,97 @@ from kivy.utils import platform
 # ---------------------------------------------------------------------------
 _SOAP_NS   = 'http://ownly.audio/soap'
 _SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
+
+# ---------------------------------------------------------------------------
+# Local streaming proxy — lets ExoPlayer stream HTTP without cleartext policy
+# ---------------------------------------------------------------------------
+class _LocalProxy(threading.Thread):
+    """Single-use HTTP proxy on 127.0.0.1 (cleartext always allowed).
+
+    ExoPlayer → http://127.0.0.1:<port>/
+    Proxy      → urllib (bypasses Android NetworkSecurityPolicy) → remote URL
+
+    Supports Range requests so ExoPlayer can seek without re-downloading.
+    """
+
+    def __init__(self, remote_url):
+        super().__init__(daemon=True)
+        self.remote_url = remote_url
+        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._srv.bind(('127.0.0.1', 0))
+        self._srv.listen(8)
+        self.port = self._srv.getsockname()[1]
+        self._stopped = False
+
+    def stop(self):
+        self._stopped = True
+        try:
+            self._srv.close()
+        except Exception:
+            pass
+
+    def run(self):
+        while not self._stopped:
+            try:
+                self._srv.settimeout(2.0)
+                conn, _ = self._srv.accept()
+            except (socket.timeout, OSError):
+                continue
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn):
+        try:
+            # Read HTTP request headers
+            raw = b''
+            while b'\r\n\r\n' not in raw:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                raw += chunk
+            req_text = raw.decode('utf-8', errors='replace')
+
+            # Parse optional Range header
+            range_start = 0
+            for line in req_text.splitlines():
+                if line.lower().startswith('range:'):
+                    try:
+                        range_start = int(line.split('=')[1].split('-')[0])
+                    except Exception:
+                        pass
+
+            req = urllib.request.Request(self.remote_url)
+            if range_start > 0:
+                req.add_header('Range', f'bytes={range_start}-')
+
+            resp = urllib.request.urlopen(req, timeout=60)
+            total = int(resp.headers.get('Content-Length', 0))
+            status = 206 if range_start > 0 else 200
+            status_text = 'Partial Content' if status == 206 else 'OK'
+
+            hdr = f'HTTP/1.1 {status} {status_text}\r\nContent-Type: audio/mpeg\r\n'
+            if total:
+                hdr += f'Content-Length: {total}\r\n'
+            if range_start > 0:
+                total_hint = total + range_start
+                hdr += f'Content-Range: bytes {range_start}-{total_hint - 1}/{total_hint}\r\n'
+            hdr += 'Accept-Ranges: bytes\r\nConnection: close\r\n\r\n'
+            conn.sendall(hdr.encode())
+
+            with resp:
+                while not self._stopped:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    conn.sendall(chunk)
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 # Android ExoPlayer listener — defined once (jnius singleton pattern).
 _ExoListenerClass = None
@@ -1113,6 +1205,7 @@ class OwnlyApp(App):
         self._soap_port      = 8767
         self._tmp_file       = None
         self._dl_wake_lock   = None   # PARTIAL_WAKE_LOCK held during background downloads
+        self._proxy          = None   # _LocalProxy instance for current stream
         self._cached_ids     = set()
         self._offline_only   = False
         self._expanded_bands  = set()
@@ -1641,6 +1734,11 @@ class OwnlyApp(App):
                     pass
                 self._sound = None
 
+        # Stop any previous local proxy
+        if self._proxy:
+            self._proxy.stop()
+            self._proxy = None
+
         # Clean up previous temp file
         if self._tmp_file and os.path.exists(self._tmp_file):
             try:
@@ -1660,16 +1758,14 @@ class OwnlyApp(App):
             if self.auto_cache_on_play and track.get('track_id'):
                 self.download_track_by_id(server_idx, track['track_id'])
         if platform == 'android':
-            # All MediaPlayer setup must run on main thread (needs Looper).
-            # For HTTP URLs, download first via urllib (Python HTTP bypasses Android's
-            # cleartext traffic policy that blocks native MediaPlayer HTTP streaming).
             if url.startswith('http'):
-                self._root.ids.now_playing.text = f'⏳ Lade {label} …'
-                threading.Thread(
-                    target=self._download_then_play_android,
-                    args=(url, label, server_addr),
-                    daemon=True
-                ).start()
+                # Stream via local proxy: ExoPlayer connects to 127.0.0.1 (cleartext
+                # always allowed), proxy fetches remote URL via Python urllib.
+                proxy = _LocalProxy(url)
+                self._proxy = proxy
+                proxy.start()
+                Clock.schedule_once(
+                    lambda _: self._setup_exoplayer(f'http://127.0.0.1:{proxy.port}/', label))
             else:
                 Clock.schedule_once(lambda _: self._setup_exoplayer(url, label))
         else:
@@ -2094,6 +2190,9 @@ class OwnlyApp(App):
         pass
 
     def on_stop(self):
+        if self._proxy:
+            self._proxy.stop()
+            self._proxy = None
         if self._sound:
             try:
                 self._sound.stop()
