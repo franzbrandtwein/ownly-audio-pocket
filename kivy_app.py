@@ -1900,11 +1900,18 @@ class OwnlyApp(App):
         try:
             from jnius import autoclass
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            NotifManager   = autoclass('android.app.NotificationManager')
             Build          = autoclass('android.os.Build')
             ctx = PythonActivity.mActivity
             CHANNEL_ID = 'ownly_audio'
             NOTIF_ID   = 1
+
+            try:
+                icon_id = ctx.getApplicationInfo().icon
+                if icon_id == 0:
+                    raise ValueError('no icon')
+            except Exception:
+                icon_id = autoclass('android.R$drawable').ic_dialog_info
+
             nm = ctx.getSystemService(ctx.NOTIFICATION_SERVICE)
             if Build.VERSION.SDK_INT >= 26:
                 builder = autoclass('android.app.Notification$Builder')(ctx, CHANNEL_ID)
@@ -1912,7 +1919,7 @@ class OwnlyApp(App):
                 builder = autoclass('android.app.Notification$Builder')(ctx)
             builder.setContentTitle('Ownly Audio')
             builder.setContentText(track_label)
-            builder.setSmallIcon(ctx.getApplicationInfo().icon)
+            builder.setSmallIcon(icon_id)
             builder.setOngoing(True)
             nm.notify(NOTIF_ID, builder.build())
         except Exception:
