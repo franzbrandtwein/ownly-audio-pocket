@@ -298,9 +298,11 @@ def _soap_request(host, port, method, **params):
 
 
 def _soap_text(element, tag):
-    """Find first child matching '{_SOAP_NS}tag' and return its text."""
-    node = element.find(f'{{{_SOAP_NS}}}{tag}')
-    return (node.text or '') if node is not None else ''
+    """Find first child with local name 'tag', regardless of namespace."""
+    for child in element:
+        if child.tag.split('}')[-1] == tag:
+            return child.text or ''
+    return ''
 
 # ---------------------------------------------------------------------------
 # KV layout
@@ -1403,7 +1405,9 @@ class OwnlyApp(App):
         try:
             root = _soap_request(host, port, 'GetTracks')
             tracks = []
-            for item in root.iter(f'{{{_SOAP_NS}}}TrackInfo'):
+            for item in root.iter():
+                if item.tag.split('}')[-1] != 'TrackInfo':
+                    continue
                 tracks.append({
                     'idx':        int(_soap_text(item, 'idx') or 0),
                     'track_id':   _soap_text(item, 'id'),
