@@ -2114,19 +2114,26 @@ class OwnlyApp(App):
             self._stop_progress_clock()
             return
         try:
-            pos = player.getCurrentPosition()   # ms
-            dur = player.getDuration()          # ms  (negative if unknown)
-            if dur > 0:
-                self._root.ids.progress_bar.value = int(pos * 1000 / dur)
+            if platform == 'android':
+                pos_ms = player.getCurrentPosition()   # ms
+                dur_ms = player.getDuration()          # ms (negative if unknown)
+            else:
+                # Kivy SoundLoader: get_pos() → seconds, length → seconds
+                pos_ms = int(player.get_pos() * 1000)
+                dur_ms = int((player.length or 0) * 1000)
+
+            if dur_ms > 0:
+                self._root.ids.progress_bar.value = int(pos_ms * 1000 / dur_ms)
                 self._root.ids.time_label.text = (
-                    f'{pos//60000}:{(pos//1000)%60:02d} / '
-                    f'{dur//60000}:{(dur//1000)%60:02d}'
+                    f'{pos_ms//60000}:{(pos_ms//1000)%60:02d} / '
+                    f'{dur_ms//60000}:{(dur_ms//1000)%60:02d}'
                 )
             else:
                 self._root.ids.progress_bar.value = 0
-                self._root.ids.time_label.text = f'{pos//60000}:{(pos//1000)%60:02d}'
-        except Exception:
-            self._stop_progress_clock()
+                self._root.ids.time_label.text = f'{pos_ms//60000}:{(pos_ms//1000)%60:02d}'
+        except Exception as e:
+            # Show error instead of silently killing the clock — helps debugging
+            self._root.ids.time_label.text = f'dbg:{e}'
 
     def _reset_progress(self):
         self._stop_progress_clock()
@@ -2159,6 +2166,7 @@ class OwnlyApp(App):
             self._sound.bind(on_stop=self._on_track_ended)
             self._sound.play()
             self._root.ids.now_playing.text = f'> {label}'
+            self._start_progress_clock()
         else:
             self._root.ids.now_playing.text = f'❌ Kein Audio-Backend: {label}'
             self._root.ids.play_btn.text = '>'
