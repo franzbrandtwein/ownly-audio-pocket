@@ -666,7 +666,7 @@ KV = """
 <SettingsPopup>:
     title: 'Einstellungen'
     size_hint: .92, None
-    height: dp(160)
+    height: dp(260)
     auto_dismiss: True
     BoxLayout:
         orientation: 'vertical'
@@ -690,6 +690,79 @@ KV = """
                 text: 'EIN' if app.auto_cache_on_play else 'AUS'
                 background_color: (.18, .55, .18, 1) if app.auto_cache_on_play else (.45, .45, .45, 1)
                 on_release: app.toggle_auto_cache()
+        Label:
+            size_hint_y: None
+            height: dp(18)
+            text: 'Offline-Ordner:'
+            font_size: dp(12)
+            color: (.7, .7, .7, 1)
+            halign: 'left'
+            text_size: self.size
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+            TextInput:
+                id: offline_dir_input
+                font_size: dp(12)
+                multiline: False
+                background_color: (.15, .15, .15, 1)
+                foreground_color: (.95, .95, .95, 1)
+            Button:
+                size_hint_x: None
+                width: dp(44)
+                font_size: dp(18)
+                text: '📁'
+                background_color: (.3, .3, .3, 1)
+                on_release: app.open_dir_chooser(offline_dir_input)
+            Button:
+                size_hint_x: None
+                width: dp(90)
+                font_size: dp(12)
+                text: 'Speichern'
+                background_color: (.2, .4, .7, 1)
+                on_release: app.set_offline_tracks_dir(offline_dir_input.text)
+        Label:
+            id: offline_dir_status
+            size_hint_y: None
+            height: dp(20)
+            font_size: dp(11)
+            color: (.6, .9, .6, 1)
+            halign: 'left'
+            text_size: self.size
+            text: ''
+
+<DirChooserPopup>:
+    title: 'Ordner wählen'
+    size_hint: .95, .9
+    auto_dismiss: True
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(6)
+        padding: dp(8)
+        FileChooserListView:
+            id: chooser
+            dirselect: True
+            filters: ['*/']
+            path: root.start_path
+        BoxLayout:
+            size_hint_y: None
+            height: dp(48)
+            spacing: dp(8)
+            Label:
+                id: sel_label
+                text: chooser.path
+                font_size: dp(11)
+                color: (.8, .8, .8, 1)
+                shorten: True
+                shorten_from: 'left'
+            Button:
+                size_hint_x: None
+                width: dp(110)
+                text: 'Auswählen'
+                font_size: dp(13)
+                background_color: (.2, .5, .2, 1)
+                on_release: root.confirm(chooser.path)
 
 <OwnlyRoot>:
     orientation: 'vertical'
@@ -956,6 +1029,18 @@ class SettingsPopup(Popup):
     pass
 
 
+class DirChooserPopup(Popup):
+    start_path = StringProperty('/')
+
+    def __init__(self, on_confirm, **kwargs):
+        super().__init__(**kwargs)
+        self._on_confirm = on_confirm
+
+    def confirm(self, path):
+        self._on_confirm(path)
+        self.dismiss()
+
+
 # ---------------------------------------------------------------------------
 # QR Scanner  (cv2.VideoCapture on desktop · Kivy Camera on Android)
 # ---------------------------------------------------------------------------
@@ -1207,8 +1292,9 @@ class OwnlyApp(App):
         self._dl_wake_lock   = None   # PARTIAL_WAKE_LOCK held during background downloads
         self._proxy          = None   # _LocalProxy instance for current stream
         self._wifi_lock      = None   # WiFi lock — keeps radio on during streaming
-        self._cached_ids     = set()
-        self._offline_only   = False
+        self._cached_ids          = set()
+        self._offline_only        = False
+        self._offline_tracks_dir  = ''   # empty = use default (user_data_dir/tracks)
         self._expanded_bands  = set()
         self._expanded_albums = set()
         self._current_addr   = ''
@@ -1220,8 +1306,9 @@ class OwnlyApp(App):
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
+        self._load_settings()          # must run before _load_cached_ids
         Clock.schedule_once(self._load_cached_ids, 0)
-        Clock.schedule_once(self._load_settings, 0)
+        Clock.schedule_once(self._load_settings, 0)   # re-apply on main thread for UI bindings
         # Delay startup connect so Android finishes rendering the widget tree
         Clock.schedule_once(self._load_saved_host, 1.0)
         return self._root
@@ -1240,20 +1327,64 @@ class OwnlyApp(App):
         try:
             with open(self._settings_file()) as f:
                 s = json.load(f)
-            self.auto_cache_on_play = bool(s.get('auto_cache_on_play', False))
+            self.auto_cache_on_play    = bool(s.get('auto_cache_on_play', False))
+            self._offline_tracks_dir   = s.get('offline_tracks_dir', '')
         except Exception:
-            self.auto_cache_on_play = False
+            self.auto_cache_on_play    = False
+            self._offline_tracks_dir   = ''
 
     def _save_settings(self):
         try:
             with open(self._settings_file(), 'w') as f:
-                json.dump({'auto_cache_on_play': self.auto_cache_on_play}, f)
+                json.dump({
+                    'auto_cache_on_play':  self.auto_cache_on_play,
+                    'offline_tracks_dir':  self._offline_tracks_dir,
+                }, f)
         except Exception:
             pass
 
     def toggle_auto_cache(self):
         self.auto_cache_on_play = not self.auto_cache_on_play
         self._save_settings()
+
+    def set_offline_tracks_dir(self, new_path):
+        """Change the offline-tracks directory, moving all existing files there."""
+        new_path = new_path.strip()
+        old_dir  = self._cache_dir()          # resolves current (possibly default) path
+        new_dir  = new_path or os.path.join(self.user_data_dir, 'tracks')
+
+        if os.path.realpath(old_dir) == os.path.realpath(new_dir):
+            return  # nothing to do
+
+        try:
+            os.makedirs(new_dir, exist_ok=True)
+        except Exception as e:
+            if self._settings_popup:
+                self._settings_popup.ids.offline_dir_status.text = f'❌ {e}'
+            return
+
+        moved = 0
+        errors = []
+        if os.path.isdir(old_dir):
+            for fname in os.listdir(old_dir):
+                src = os.path.join(old_dir, fname)
+                dst = os.path.join(new_dir, fname)
+                try:
+                    import shutil
+                    shutil.move(src, dst)
+                    moved += 1
+                except Exception as e:
+                    errors.append(str(e))
+
+        self._offline_tracks_dir = new_path
+        self._save_settings()
+        self._load_cached_ids()   # refresh index from new location
+
+        msg = f'✓ Verschoben: {moved} Dateien'
+        if errors:
+            msg += f'  ({len(errors)} Fehler)'
+        if self._settings_popup:
+            self._settings_popup.ids.offline_dir_status.text = msg
 
     def _load_servers(self, *_):
         try:
@@ -1355,7 +1486,7 @@ class OwnlyApp(App):
     # ── Offline cache ────────────────────────────────────────────────────────
 
     def _cache_dir(self):
-        d = os.path.join(self.user_data_dir, 'tracks')
+        d = self._offline_tracks_dir.strip() or os.path.join(self.user_data_dir, 'tracks')
         os.makedirs(d, exist_ok=True)
         return d
 
@@ -1409,7 +1540,7 @@ class OwnlyApp(App):
                 f'📁 {n} Tracks offline verfügbar'))
 
     def _load_cached_ids(self, *_):
-        d = os.path.join(self.user_data_dir, 'tracks')
+        d = self._cache_dir()
         if os.path.isdir(d):
             self._cached_ids = {
                 f for f in os.listdir(d)
@@ -1787,7 +1918,7 @@ class OwnlyApp(App):
         except Exception:
             pass
 
-
+    def play_idx(self, server_idx):
         """Start playing the track identified by server-side idx."""
         self._active_srv_idx = server_idx
         self._apply_active_marker()
@@ -2133,7 +2264,21 @@ class OwnlyApp(App):
     def open_settings(self):
         if self._settings_popup is None:
             self._settings_popup = SettingsPopup()
+        self._settings_popup.ids.offline_dir_input.text = self._offline_tracks_dir or self._cache_dir()
+        self._settings_popup.ids.offline_dir_status.text = ''
         self._settings_popup.open()
+
+    def open_dir_chooser(self, target_input):
+        """Open a directory browser; on confirm, fill target_input with the chosen path."""
+        start = target_input.text.strip() or '/'
+        if not os.path.isdir(start):
+            start = os.path.expanduser('~')
+
+        def _on_confirm(path):
+            target_input.text = path
+
+        popup = DirChooserPopup(on_confirm=_on_confirm, start_path=start)
+        popup.open()
 
     def open_connections(self):
         if self._conn_popup is None:
