@@ -540,6 +540,65 @@ KV = """
                 background_color: (.18, .18, .18, 1)
                 on_release: app.open_qr_scan(); root.dismiss()
 
+<MenuPopup>:
+    title: '☰ Menü'
+    size_hint: .8, None
+    height: dp(230)
+    auto_dismiss: True
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(8)
+        padding: dp(12)
+        Button:
+            text: '🔗  Verbindungen'
+            font_size: dp(14)
+            size_hint_y: None
+            height: dp(44)
+            background_color: (.25, .25, .25, 1)
+            on_release: root.dismiss(); app.open_connections()
+        Button:
+            text: '🖥  Server'
+            font_size: dp(14)
+            size_hint_y: None
+            height: dp(44)
+            background_color: (.18, .55, .18, 1)
+            on_release: root.dismiss(); app.open_server_popup()
+        Button:
+            text: '⚙  Einstellungen'
+            font_size: dp(14)
+            size_hint_y: None
+            height: dp(44)
+            background_color: (.2, .3, .5, 1)
+            on_release: root.dismiss(); app.open_settings()
+
+<SettingsPopup>:
+    title: 'Einstellungen'
+    size_hint: .92, None
+    height: dp(160)
+    auto_dismiss: True
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        padding: dp(14)
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(10)
+            Label:
+                text: 'Beim Abspielen offline sichern'
+                font_size: dp(13)
+                color: (.9, .9, .9, 1)
+                halign: 'left'
+                valign: 'middle'
+                text_size: self.size
+            Button:
+                size_hint_x: None
+                width: dp(64)
+                font_size: dp(13)
+                text: 'EIN' if app.auto_cache_on_play else 'AUS'
+                background_color: (.18, .55, .18, 1) if app.auto_cache_on_play else (.45, .45, .45, 1)
+                on_release: app.toggle_auto_cache()
+
 <OwnlyRoot>:
     orientation: 'vertical'
     canvas.before:
@@ -568,7 +627,7 @@ KV = """
             size_hint_x: None
             width: dp(48)
             background_color: (.18, .18, .18, 1)
-            on_release: app.open_connections()
+            on_release: app.open_menu()
 
         Button:
             text: 'Srv'
@@ -797,6 +856,14 @@ class ServerPopup(Popup):
     pass
 
 
+class MenuPopup(Popup):
+    pass
+
+
+class SettingsPopup(Popup):
+    pass
+
+
 # ---------------------------------------------------------------------------
 # QR Scanner  (cv2.VideoCapture on desktop · Kivy Camera on Android)
 # ---------------------------------------------------------------------------
@@ -996,6 +1063,8 @@ class QRScanPopup(Popup):
 class OwnlyApp(App):
     title = 'Ownly Audio Pocket'
 
+    auto_cache_on_play = BooleanProperty(False)
+
     def build(self):
         try:
             return self._build_inner()
@@ -1052,10 +1121,12 @@ class OwnlyApp(App):
         self._conn_popup     = None
         self._embedded_server = EmbeddedServer()
         self._server_popup    = None
+        self._settings_popup  = None
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
         Clock.schedule_once(self._load_cached_ids, 0)
+        Clock.schedule_once(self._load_settings, 0)
         # Delay startup connect so Android finishes rendering the widget tree
         Clock.schedule_once(self._load_saved_host, 1.0)
         return self._root
@@ -1066,6 +1137,28 @@ class OwnlyApp(App):
 
     def _servers_file(self):
         return os.path.join(self.user_data_dir, 'servers.json')
+
+    def _settings_file(self):
+        return os.path.join(self.user_data_dir, 'settings.json')
+
+    def _load_settings(self, *_):
+        try:
+            with open(self._settings_file()) as f:
+                s = json.load(f)
+            self.auto_cache_on_play = bool(s.get('auto_cache_on_play', False))
+        except Exception:
+            self.auto_cache_on_play = False
+
+    def _save_settings(self):
+        try:
+            with open(self._settings_file(), 'w') as f:
+                json.dump({'auto_cache_on_play': self.auto_cache_on_play}, f)
+        except Exception:
+            pass
+
+    def toggle_auto_cache(self):
+        self.auto_cache_on_play = not self.auto_cache_on_play
+        self._save_settings()
 
     def _load_servers(self, *_):
         try:
@@ -1561,6 +1654,9 @@ class OwnlyApp(App):
             url = local_path
         else:
             url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
+            # Auto-cache: trigger background download if setting is on
+            if self.auto_cache_on_play and track.get('track_id'):
+                self.download_track_by_id(server_idx, track['track_id'])
         if platform == 'android':
             # All MediaPlayer setup must run on main thread (needs Looper).
             # For HTTP URLs, download first via urllib (Python HTTP bypasses Android's
@@ -1801,6 +1897,14 @@ class OwnlyApp(App):
         btn.background_color = (.93, .4, .2, 1) if self._shuffle else (.18, .18, .18, 1)
 
     # ── QR scan ──────────────────────────────────────────────────────────────
+
+    def open_menu(self):
+        MenuPopup().open()
+
+    def open_settings(self):
+        if self._settings_popup is None:
+            self._settings_popup = SettingsPopup()
+        self._settings_popup.open()
 
     def open_connections(self):
         if self._conn_popup is None:
