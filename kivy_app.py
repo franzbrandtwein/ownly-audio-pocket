@@ -1634,6 +1634,7 @@ class OwnlyApp(App):
                 self._stop_progress_clock()
             else:
                 try:
+                    self._sound.unbind(on_stop=self._on_track_ended)
                     self._sound.stop()
                 except Exception:
                     pass
@@ -1873,9 +1874,11 @@ class OwnlyApp(App):
             return
         # Kivy SoundLoader path (desktop)
         if self._sound.state == 'play':
+            self._sound.unbind(on_stop=self._on_track_ended)
             self._sound.stop()
             self._root.ids.play_btn.text = '>'
         else:
+            self._sound.bind(on_stop=self._on_track_ended)
             self._sound.play()
             self._root.ids.play_btn.text = '||'
 
