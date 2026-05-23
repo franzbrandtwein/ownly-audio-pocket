@@ -22,7 +22,7 @@ android.gradle_dependencies = com.journeyapps:zxing-android-embedded:3.6.0, andr
 p4a.branch = v2024.01.21
 
 # ── Android ───────────────────────────────────────────────────────────────
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CAMERA,WAKE_LOCK,READ_EXTERNAL_STORAGE
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CAMERA,WAKE_LOCK,READ_EXTERNAL_STORAGE,FOREGROUND_SERVICE,FOREGROUND_SERVICE_MEDIA_PLAYBACK,POST_NOTIFICATIONS
 android.api = 35
 android.minapi = 24
 android.archs = arm64-v8a
@@ -31,6 +31,9 @@ android.allow_backup = False
 android.enable_androidx = True
 android.release_artifact = apk
 android.debug = False
+
+# Foreground service: keeps the app alive during background audio playback
+services = Audio:service_audio.py:mediaPlayback
 
 # ── UI ────────────────────────────────────────────────────────────────────
 orientation = portrait

@@ -1730,7 +1730,64 @@ class OwnlyApp(App):
         except Exception:
             pass
 
-    def play_idx(self, server_idx):
+    def _start_audio_service(self):
+        """Start the Android foreground service to keep app alive in background."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent         = autoclass('android.content.Intent')
+            Build          = autoclass('android.os.Build')
+            ServiceAudio   = autoclass('de.ownly.ownlyaudiopocket.ServiceAudio')
+            intent = Intent(PythonActivity.mActivity, ServiceAudio)
+            if Build.VERSION.SDK_INT >= 26:
+                PythonActivity.mActivity.startForegroundService(intent)
+            else:
+                PythonActivity.mActivity.startService(intent)
+        except Exception:
+            pass
+
+    def _stop_audio_service(self):
+        """Stop the Android foreground service."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent         = autoclass('android.content.Intent')
+            ServiceAudio   = autoclass('de.ownly.ownlyaudiopocket.ServiceAudio')
+            PythonActivity.mActivity.stopService(
+                Intent(PythonActivity.mActivity, ServiceAudio))
+        except Exception:
+            pass
+
+    def _update_audio_notification(self, track_label):
+        """Update the playback notification text shown while in background."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            NotifManager   = autoclass('android.app.NotificationManager')
+            Build          = autoclass('android.os.Build')
+            ctx = PythonActivity.mActivity
+            CHANNEL_ID = 'ownly_audio'
+            NOTIF_ID   = 1
+            nm = ctx.getSystemService(ctx.NOTIFICATION_SERVICE)
+            if Build.VERSION.SDK_INT >= 26:
+                builder = autoclass('android.app.Notification$Builder')(ctx, CHANNEL_ID)
+            else:
+                builder = autoclass('android.app.Notification$Builder')(ctx)
+            builder.setContentTitle('Ownly Audio')
+            builder.setContentText(track_label)
+            builder.setSmallIcon(ctx.getApplicationInfo().icon)
+            builder.setOngoing(True)
+            nm.notify(NOTIF_ID, builder.build())
+        except Exception:
+            pass
+
+
         """Start playing the track identified by server-side idx."""
         self._active_srv_idx = server_idx
         self._apply_active_marker()
@@ -1906,6 +1963,8 @@ class OwnlyApp(App):
             self._root.ids.now_playing.text = f'> {label}'
             self._root.ids.play_btn.text = '||'
             self._start_progress_clock()
+            self._start_audio_service()
+            self._update_audio_notification(label)
         except Exception as e:
             self._on_play_error(str(e))
 
@@ -2235,6 +2294,7 @@ class OwnlyApp(App):
 
     def on_stop(self):
         self._release_wifi_lock()
+        self._stop_audio_service()
         if self._proxy:
             self._proxy.stop()
             self._proxy = None
