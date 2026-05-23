@@ -1112,6 +1112,7 @@ class OwnlyApp(App):
         self._server_host    = ''
         self._soap_port      = 8767
         self._tmp_file       = None
+        self._dl_wake_lock   = None   # PARTIAL_WAKE_LOCK held during background downloads
         self._cached_ids     = set()
         self._offline_only   = False
         self._expanded_bands  = set()
@@ -1678,8 +1679,32 @@ class OwnlyApp(App):
                 daemon=True
             ).start()
 
+    def _acquire_dl_wake_lock(self):
+        """Acquire PARTIAL_WAKE_LOCK so download threads keep running with screen off."""
+        try:
+            from jnius import autoclass as _ac  # type: ignore
+            PowerManager = _ac('android.os.PowerManager')
+            PythonActivity = _ac('org.kivy.android.PythonActivity')
+            pm = PythonActivity.mActivity.getSystemService(
+                PythonActivity.mActivity.POWER_SERVICE)
+            if self._dl_wake_lock is None:
+                self._dl_wake_lock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK, 'OwnlyAudioPocket::Download')
+            if not self._dl_wake_lock.isHeld():
+                self._dl_wake_lock.acquire()
+        except Exception:
+            pass
+
+    def _release_dl_wake_lock(self):
+        try:
+            if self._dl_wake_lock and self._dl_wake_lock.isHeld():
+                self._dl_wake_lock.release()
+        except Exception:
+            pass
+
     def _download_then_play_android(self, url, label, server_addr):
         """Android: download via urllib to temp file, then play locally via ExoPlayer."""
+        self._acquire_dl_wake_lock()
         try:
             tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
             tmp_path = tmp.name
@@ -1706,6 +1731,8 @@ class OwnlyApp(App):
             Clock.schedule_once(lambda _: self._on_server_gone(server_addr))
         except Exception as e:
             Clock.schedule_once(lambda _: self._on_play_error(str(e)))
+        finally:
+            self._release_dl_wake_lock()
 
     def _setup_exoplayer(self, url, label):
         """Main-thread: release old player, create ExoPlayer, prepare and play."""
