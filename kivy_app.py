@@ -1987,6 +1987,9 @@ class OwnlyApp(App):
         self._reset_progress()
         if not self._filtered:
             return
+        # If offline, silently probe known servers — reconnect if one responds
+        if self._offline_only and self._servers:
+            threading.Thread(target=self._probe_servers_for_reconnect, daemon=True).start()
         if self._shuffle:
             # pick random, avoid repeating same track
             candidates = [t for t in self._filtered if t['idx'] != self._active_srv_idx]
@@ -1997,6 +2000,22 @@ class OwnlyApp(App):
             )
             nxt = self._filtered[(cur_pos + 1) % len(self._filtered)]
         self.play_idx(nxt['idx'])
+
+    def _probe_servers_for_reconnect(self):
+        """Background: try each known server; if one responds, reconnect silently."""
+        for srv in list(self._servers):
+            addr = srv['addr']
+            try:
+                host, port = (addr.rsplit(':', 1) + ['8767'])[:2]
+                url = f'http://{host}:{port}/audio/0'
+                req = urllib.request.Request(url)
+                req.get_method = lambda: 'HEAD'
+                urllib.request.urlopen(req, timeout=2)
+                # Server is up — reconnect on main thread
+                Clock.schedule_once(lambda _, a=addr: self.connect(a))
+                return
+            except Exception:
+                continue
 
     def _exo_pause_resume(self):
         """Pause or resume ExoPlayer. Uses tracked boolean — avoids isPlaying() jnius issues."""
