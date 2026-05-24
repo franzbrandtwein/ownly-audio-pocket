@@ -777,6 +777,7 @@ KV = """
                 on_release: root.dismiss()
 
 
+<SettingsPopup>:
     title: 'Einstellungen'
     size_hint: .92, None
     height: dp(260)
