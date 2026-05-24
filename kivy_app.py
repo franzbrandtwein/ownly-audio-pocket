@@ -64,12 +64,13 @@ class _LocalProxy(threading.Thread):
     on_cached(track_id) is called on success.
     """
 
-    def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None):
+    def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None, on_debug=None):
         super().__init__(daemon=True)
         self.remote_url = remote_url
         self._cache_dest = cache_dest
         self._track_id   = track_id
         self._on_cached  = on_cached
+        self._on_debug   = on_debug   # callable(str) — called from background thread
         self._cached     = False   # only cache once (first full request)
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -94,8 +95,16 @@ class _LocalProxy(threading.Thread):
                 continue
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
 
+    def _dbg(self, msg):
+        if self._on_debug:
+            try:
+                self._on_debug(msg)
+            except Exception:
+                pass
+
     def _handle(self, conn):
         try:
+            self._dbg('proxy: verbunden')
             # Read HTTP request headers
             raw = b''
             while b'\r\n\r\n' not in raw:
@@ -118,8 +127,14 @@ class _LocalProxy(threading.Thread):
             if range_start > 0:
                 req.add_header('Range', f'bytes={range_start}-')
 
-            resp = urllib.request.urlopen(req, timeout=60)
+            self._dbg(f'proxy: öffne {self.remote_url[-40:]}')
+            try:
+                resp = urllib.request.urlopen(req, timeout=60)
+            except Exception as e:
+                self._dbg(f'proxy ERR urlopen: {e}')
+                raise
             total = int(resp.headers.get('Content-Length', 0))
+            self._dbg(f'proxy: server OK {total}B')
             status = 206 if range_start > 0 else 200
             status_text = 'Partial Content' if status == 206 else 'OK'
 
@@ -144,9 +159,12 @@ class _LocalProxy(threading.Thread):
             if tmp_path:
                 try:
                     tmp_file = open(tmp_path, 'wb')
-                except Exception:
+                    self._dbg(f'proxy: cache → {tmp_path[-40:]}')
+                except Exception as e:
+                    self._dbg(f'proxy: cache open ERR: {e}')
                     tmp_path = None   # can't cache — stream only, no error
             completed = False
+            bytes_sent = 0
             try:
                 with resp:
                     while not self._stopped:
@@ -155,9 +173,11 @@ class _LocalProxy(threading.Thread):
                             completed = True
                             break
                         conn.sendall(chunk)
+                        bytes_sent += len(chunk)
                         if tmp_file:
                             tmp_file.write(chunk)
             finally:
+                self._dbg(f'proxy: fertig {bytes_sent}B completed={completed}')
                 if tmp_file:
                     tmp_file.close()
                 if do_cache and tmp_path:
@@ -2039,12 +2059,18 @@ class OwnlyApp(App):
                 tid = track.get('track_id')
                 if self.auto_cache_on_play and tid and tid not in self._cached_ids:
                     cache_dest = self._cache_path(tid)
+                def _status(msg):
+                    Clock.schedule_once(
+                        lambda _: setattr(self._root.ids.now_playing, 'text', msg))
+
                 proxy = _LocalProxy(url,
                                     cache_dest=cache_dest,
                                     track_id=tid,
-                                    on_cached=self._on_track_cached_by_proxy)
+                                    on_cached=self._on_track_cached_by_proxy,
+                                    on_debug=_status)
                 self._proxy = proxy
                 proxy.start()
+                _status(f'DBG proxy:{proxy.port} → {url[-35:]}')
                 Clock.schedule_once(
                     lambda _: self._setup_exoplayer(f'http://127.0.0.1:{proxy.port}/', label))
             else:
@@ -2113,6 +2139,7 @@ class OwnlyApp(App):
 
     def _setup_exoplayer(self, url, label):
         """Main-thread: release old player, create ExoPlayer, prepare and play."""
+        self._root.ids.now_playing.text = f'DBG setup_exo: {url[-40:]}'
         self._acquire_wifi_lock()  # keep WiFi radio on for proxy streaming
         try:
             from jnius import autoclass  # type: ignore
