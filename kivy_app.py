@@ -58,11 +58,19 @@ class _LocalProxy(threading.Thread):
     Proxy      → urllib (bypasses Android NetworkSecurityPolicy) → remote URL
 
     Supports Range requests so ExoPlayer can seek without re-downloading.
+
+    Optional cache_dest: if set, the first full response (no Range header) is
+    written to cache_dest+'.tmp' and renamed to cache_dest on completion.
+    on_cached(track_id) is called on success.
     """
 
-    def __init__(self, remote_url):
+    def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None):
         super().__init__(daemon=True)
         self.remote_url = remote_url
+        self._cache_dest = cache_dest
+        self._track_id   = track_id
+        self._on_cached  = on_cached
+        self._cached     = False   # only cache once (first full request)
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind(('127.0.0.1', 0))
@@ -124,12 +132,41 @@ class _LocalProxy(threading.Thread):
             hdr += 'Accept-Ranges: bytes\r\nConnection: close\r\n\r\n'
             conn.sendall(hdr.encode())
 
-            with resp:
-                while not self._stopped:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    conn.sendall(chunk)
+            # Cache while streaming: only on first full (non-range) request
+            do_cache = (
+                self._cache_dest
+                and not self._cached
+                and range_start == 0
+            )
+            tmp_path = (self._cache_dest + '.tmp') if do_cache else None
+            tmp_file = open(tmp_path, 'wb') if tmp_path else None
+            completed = False
+            try:
+                with resp:
+                    while not self._stopped:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            completed = True
+                            break
+                        conn.sendall(chunk)
+                        if tmp_file:
+                            tmp_file.write(chunk)
+            finally:
+                if tmp_file:
+                    tmp_file.close()
+                if do_cache and completed and tmp_path:
+                    try:
+                        os.rename(tmp_path, self._cache_dest)
+                        self._cached = True
+                        if self._on_cached and self._track_id:
+                            tid = self._track_id
+                            from kivy.clock import Clock as _Clock
+                            _Clock.schedule_once(lambda _: self._on_cached(tid))
+                    except Exception:
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
         except Exception:
             pass
         finally:
@@ -1596,6 +1633,11 @@ class OwnlyApp(App):
             if t['album'] == album and t['track_id'] not in self._cached_ids:
                 self.download_track_by_id(t['idx'], t['track_id'])
 
+    def _on_track_cached_by_proxy(self, track_id):
+        """Called on main thread when the proxy has finished saving a track to cache."""
+        self._cached_ids.add(track_id)
+        self._refresh_cache_markers()
+
     def _refresh_cache_markers(self):
         self._set_list_data(self._filtered)
 
@@ -1975,14 +2017,20 @@ class OwnlyApp(App):
             url = local_path
         else:
             url = f'http://{self._server_host}:{self._soap_port}/audio/{server_idx}'
-            # Auto-cache: trigger background download if setting is on
-            if self.auto_cache_on_play and track.get('track_id'):
-                self.download_track_by_id(server_idx, track['track_id'])
         if platform == 'android':
             if url.startswith('http'):
                 # Stream via local proxy: ExoPlayer connects to 127.0.0.1 (cleartext
                 # always allowed), proxy fetches remote URL via Python urllib.
-                proxy = _LocalProxy(url)
+                # If auto_cache_on_play is on, the proxy saves while streaming —
+                # no separate download thread needed (avoids competing connections).
+                cache_dest = None
+                tid = track.get('track_id')
+                if self.auto_cache_on_play and tid and tid not in self._cached_ids:
+                    cache_dest = self._cache_path(tid)
+                proxy = _LocalProxy(url,
+                                    cache_dest=cache_dest,
+                                    track_id=tid,
+                                    on_cached=self._on_track_cached_by_proxy)
                 self._proxy = proxy
                 proxy.start()
                 Clock.schedule_once(
