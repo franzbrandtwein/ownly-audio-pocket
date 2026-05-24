@@ -16,6 +16,7 @@ import re
 import time
 import json
 import socket
+import socketserver
 import http.server
 import urllib.request
 import urllib.error
@@ -323,8 +324,9 @@ class EmbeddedServer:
                         f'</soap:Envelope>'
                     )
 
-            class _ReuseServer(http.server.HTTPServer):
+            class _ReuseServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
                 allow_reuse_address = True
+                daemon_threads = True
 
             try:
                 self._httpd = _ReuseServer(('0.0.0.0', soap_port), _Handler)

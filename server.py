@@ -1,4 +1,4 @@
-import http.server, os, json, urllib.parse, zipfile, io, ssl, base64, threading, socket, datetime, hashlib
+import http.server, os, json, urllib.parse, zipfile, io, ssl, base64, threading, socket, socketserver, datetime, hashlib
 from pathlib import Path
 
 PORT       = 8765
@@ -791,6 +791,10 @@ openDB().then(async () => {
 
 SW_JS = SERVICE_WORKER
 
+class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send_cors(self):
@@ -1128,7 +1132,7 @@ def _udp_broadcast_loop():
 
 def start_server():
     """Start all servers. Blocks until the main HTTPS server is stopped."""
-    admin_httpd = http.server.HTTPServer(('0.0.0.0', ADMIN_PORT), AdminHandler)
+    admin_httpd = _ThreadingHTTPServer(('0.0.0.0', ADMIN_PORT), AdminHandler)
     threading.Thread(target=admin_httpd.serve_forever, daemon=True).start()
 
     threading.Thread(target=start_soap_server, daemon=True).start()
@@ -1136,7 +1140,7 @@ def start_server():
     threading.Thread(target=_udp_broadcast_loop, daemon=True).start()
 
     cert_file, key_file = ensure_cert()
-    httpd = http.server.HTTPServer(('0.0.0.0', PORT), Handler)
+    httpd = _ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(str(cert_file), str(key_file))
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
