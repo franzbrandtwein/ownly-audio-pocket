@@ -220,13 +220,19 @@ def _get_exo_listener_class():
             __javainterfaces__ = ['androidx/media3/common/Player$Listener']
             __javacontext__ = 'app'
 
-            def __init__(self, on_ended, on_error):
+            def __init__(self, on_ended, on_error, on_state=None):
                 super().__init__()
                 self._on_ended = on_ended
                 self._on_error = on_error
+                self._on_state = on_state
+
+            _STATE_NAMES = {1: 'IDLE', 2: 'BUFFERING', 3: 'READY', 4: 'ENDED'}
 
             @java_method('(I)V')
             def onPlaybackStateChanged(self, state):
+                if self._on_state:
+                    name = self._STATE_NAMES.get(state, str(state))
+                    self._on_state(f'exo state: {name}')
                 if state == 4:   # Player.STATE_ENDED
                     self._on_ended()
 
@@ -2227,6 +2233,7 @@ class OwnlyApp(App):
             self._mp_listener = ExoListenerClass(
                 lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
                 lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
+                on_state=lambda s: Clock.schedule_once(lambda _dt: self.log(s)),
             )
             player.addListener(self._mp_listener)
 
@@ -2318,6 +2325,7 @@ class OwnlyApp(App):
             self._root.ids.play_btn.text = '>'
 
     def _on_play_error(self, msg):
+        self.log(f'❌ {msg}')
         self._exo_playing = False
         self._reset_progress()
         self._root.ids.now_playing.text = f'❌ {msg[:60]}'
