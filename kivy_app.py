@@ -9,6 +9,7 @@ APK-Build: buildozer android debug  (siehe buildozer.spec)
 __version__ = '1.0.0'
 
 import random
+import queue
 import threading
 import tempfile
 import os
@@ -1428,6 +1429,8 @@ class OwnlyApp(App):
         self._settings_popup  = None
         self._log_popup       = None
         self._log_lines       = []   # list of str, max 200
+        self._log_queue       = queue.Queue()  # thread-safe log buffer
+        Clock.schedule_interval(self._drain_log_queue, 0.25)
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
@@ -2243,6 +2246,26 @@ class OwnlyApp(App):
             player.play()   # playWhenReady=true → plays as soon as buffered
             self._exo_playing = True
 
+            # Watchdog: log ExoPlayer state after 5s if still not playing
+            proxy_url = url if url.startswith('http://127') else None
+            def _watchdog(_dt, _p=player, _u=proxy_url):
+                try:
+                    state = _p.getPlaybackState()
+                    err   = _p.getPlayerError()
+                    self.log(f'watchdog 5s: state={state} err={err}')
+                    if _u:
+                        # Try Python connection to proxy port to verify it's alive
+                        import socket as _s
+                        port = int(_u.split(':')[2].rstrip('/'))
+                        r = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+                        r.settimeout(1)
+                        result = r.connect_ex(('127.0.0.1', port))
+                        r.close()
+                        self.log(f'watchdog: proxy port={port} connect={result}')
+                except Exception as e:
+                    self.log(f'watchdog ERR: {e}')
+            Clock.schedule_once(_watchdog, 5.0)
+
             self._sound = player
             self._root.ids.now_playing.text = f'> {label}'
             self._root.ids.play_btn.text = '||'
@@ -2423,17 +2446,24 @@ class OwnlyApp(App):
     # ── Debug log ─────────────────────────────────────────────────────────────
 
     def log(self, msg):
-        """Append a line to the debug log. Thread-safe via Clock."""
-        import time as _time
-        ts = _time.strftime('%H:%M:%S')
-        line = f'[{ts}] {msg}'
-        def _append(_dt=None):
+        """Append a line to the debug log. Thread-safe via queue."""
+        ts = time.strftime('%H:%M:%S')
+        self._log_queue.put(f'[{ts}] {msg}')
+
+    def _drain_log_queue(self, dt):
+        """Called every 250ms on main thread — drains thread-safe log queue."""
+        added = False
+        while True:
+            try:
+                line = self._log_queue.get_nowait()
+            except queue.Empty:
+                break
             self._log_lines.append(line)
-            if len(self._log_lines) > 200:
-                self._log_lines = self._log_lines[-200:]
-            if self._log_popup:
-                self._refresh_log_view()
-        Clock.schedule_once(_append)
+            added = True
+        if len(self._log_lines) > 200:
+            self._log_lines = self._log_lines[-200:]
+        if added and self._log_popup:
+            self._refresh_log_view()
 
     def _refresh_log_view(self):
         if not self._log_popup:
