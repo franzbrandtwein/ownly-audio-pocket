@@ -757,16 +757,16 @@ KV = """
         padding: dp(8)
         ScrollView:
             id: log_scroll
-            Label:
+            TextInput:
                 id: log_label
                 text: ''
                 font_size: dp(11)
-                color: (.85, .95, .75, 1)
+                foreground_color: (.85, .95, .75, 1)
+                background_color: (.08, .08, .08, 1)
+                readonly: True
                 halign: 'left'
-                valign: 'top'
-                text_size: self.width, None
                 size_hint_y: None
-                height: self.texture_size[1]
+                height: max(self.minimum_height, log_scroll.height)
         BoxLayout:
             size_hint_y: None
             height: dp(44)
@@ -2233,7 +2233,7 @@ class OwnlyApp(App):
             self._mp_listener = ExoListenerClass(
                 lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
                 lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
-                on_state=lambda s: Clock.schedule_once(lambda _dt: self.log(s)),
+                lambda s: Clock.schedule_once(lambda _dt: self.log(s)),
             )
             player.addListener(self._mp_listener)
 
