@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext HTTP to localhost so ExoPlayer can connect to the
+         Python streaming proxy on 127.0.0.1 (loopback).
+         All other traffic (to the actual server) goes via the proxy using
+         Python urllib which is not subject to this policy. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

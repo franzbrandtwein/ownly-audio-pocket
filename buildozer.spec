@@ -32,6 +32,10 @@ android.enable_androidx = True
 android.release_artifact = apk
 android.debug = False
 
+# Allow cleartext HTTP to 127.0.0.1 so ExoPlayer can connect to the local proxy
+android.add_res = res
+android.extra_manifest_application_arguments = manifest_app_attrs.txt
+
 # Foreground service: keeps the app alive during background audio playback
 services = Audio:service_audio.py:mediaPlayback
 
