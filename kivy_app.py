@@ -2196,84 +2196,73 @@ class OwnlyApp(App):
             self._release_dl_wake_lock()
 
     def _setup_exoplayer(self, url, label):
-        """Main-thread: release old player, create ExoPlayer, prepare and play."""
+        """Schedules ExoPlayer creation on the Android UI thread (required by media3)."""
         self.log(f'setup_exo: {url[-50:]}')
-        self._root.ids.now_playing.text = f'DBG setup_exo: {url[-40:]}'
-        self._acquire_wifi_lock()  # keep WiFi radio on for proxy streaming
-        try:
-            from jnius import autoclass  # type: ignore
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
-            MediaItem = autoclass('androidx.media3.common.MediaItem')
-            Looper = autoclass('android.os.Looper')
+        self._root.ids.now_playing.text = f'▶ {label[:40]}'
+        self._acquire_wifi_lock()
 
-            # Always use the Android main Looper so ExoPlayer's internal
-            # message queue is processed — Kivy may run on a non-main thread
-            # whose Looper.loop() is never called, freezing ExoPlayer in BUFFERING.
-            main_looper = Looper.getMainLooper()
-            self.log(f'exo looper: {main_looper}')
+        if platform != 'android':
+            # Should not be reached on desktop (separate path in play_idx), but guard.
+            return
 
-            # Release old player on the correct thread.
-            for old in (self._old_sound, self._sound):
-                if old is not None:
-                    try:
-                        old.release()
-                    except Exception:
-                        pass
-            self._old_sound = None
-            self._sound = None
+        from android.runnable import run_on_ui_thread  # type: ignore
 
-            player = ExoPlayerBuilder(PythonActivity.mActivity).setLooper(main_looper).build()
-
-            # Hold CPU + WiFi wake lock so audio keeps playing with screen off.
-            # C.WAKE_MODE_NETWORK = 2: acquires both PARTIAL_WAKE_LOCK and WifiLock.
+        @run_on_ui_thread
+        def _on_ui_thread():
             try:
-                player.setWakeMode(PythonActivity.mActivity, 2)
-            except Exception:
-                pass
+                from jnius import autoclass  # type: ignore
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
+                MediaItem = autoclass('androidx.media3.common.MediaItem')
 
-            ExoListenerClass = _get_exo_listener_class()
-            self._mp_listener = ExoListenerClass(
-                lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
-                lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
-                lambda s: Clock.schedule_once(lambda _dt: self.log(s)),
-            )
-            player.addListener(self._mp_listener)
+                # Release old player (must be on UI thread too).
+                for old in (self._old_sound, self._sound):
+                    if old is not None:
+                        try:
+                            old.release()
+                        except Exception:
+                            pass
+                self._old_sound = None
+                self._sound = None
 
-            media_url = f'file://{url}' if url.startswith('/') else url
-            player.setMediaItem(MediaItem.fromUri(media_url))
-            player.prepare()
-            player.play()   # playWhenReady=true → plays as soon as buffered
-            self._exo_playing = True
+                player = ExoPlayerBuilder(PythonActivity.mActivity).build()
 
-            # Watchdog: log ExoPlayer state after 5s if still not playing
-            proxy_url = url if url.startswith('http://127') else None
-            def _watchdog(_dt, _p=player, _u=proxy_url):
+                # C.WAKE_MODE_NETWORK = 2: CPU + WiFi wake lock.
                 try:
-                    state = _p.getPlaybackState()
-                    err   = _p.getPlayerError()
-                    self.log(f'watchdog 5s: state={state} err={err}')
-                    if _u:
-                        # Try Python connection to proxy port to verify it's alive
-                        import socket as _s
-                        port = int(_u.split(':')[2].rstrip('/'))
-                        r = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
-                        r.settimeout(1)
-                        result = r.connect_ex(('127.0.0.1', port))
-                        r.close()
-                        self.log(f'watchdog: proxy port={port} connect={result}')
-                except Exception as e:
-                    self.log(f'watchdog ERR: {e}')
-            Clock.schedule_once(_watchdog, 5.0)
+                    player.setWakeMode(PythonActivity.mActivity, 2)
+                except Exception:
+                    pass
 
-            self._sound = player
-            self._root.ids.now_playing.text = f'> {label}'
-            self._root.ids.play_btn.text = '||'
-            self._start_progress_clock()
-            self._start_audio_service()
-            self._update_audio_notification(label)
-        except Exception as e:
-            self._on_play_error(str(e))
+                ExoListenerClass = _get_exo_listener_class()
+                self._mp_listener = ExoListenerClass(
+                    lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
+                    lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
+                    lambda s: self.log(s),
+                )
+                player.addListener(self._mp_listener)
+
+                media_url = f'file://{url}' if url.startswith('/') else url
+                player.setMediaItem(MediaItem.fromUri(media_url))
+                player.prepare()
+                player.play()
+
+                self._sound = player
+                self._exo_playing = True
+
+                # Back to Kivy thread for UI updates.
+                Clock.schedule_once(lambda _: self._on_exo_started(label))
+            except Exception as e:
+                Clock.schedule_once(lambda _dt: self._on_play_error(str(e)))
+
+        _on_ui_thread()
+
+    def _on_exo_started(self, label):
+        """Kivy-thread callback after ExoPlayer is set up on the UI thread."""
+        self._root.ids.now_playing.text = f'> {label}'
+        self._root.ids.play_btn.text = '||'
+        self._start_progress_clock()
+        self._start_audio_service()
+        self._update_audio_notification(label)
 
     def _start_progress_clock(self):
         self._stop_progress_clock()
@@ -2393,20 +2382,31 @@ class OwnlyApp(App):
                 continue
 
     def _exo_pause_resume(self):
-        """Pause or resume ExoPlayer. Uses tracked boolean — avoids isPlaying() jnius issues."""
-        try:
-            if self._exo_playing:
-                self._sound.pause()
-                self._exo_playing = False
-                self._stop_progress_clock()
-                self._root.ids.play_btn.text = '>'
-            else:
-                self._sound.play()
-                self._exo_playing = True
-                self._start_progress_clock()
-                self._root.ids.play_btn.text = '||'
-        except Exception as e:
-            self._root.ids.now_playing.text = f'❌ pause: {e}'
+        """Pause or resume ExoPlayer on the Android UI thread."""
+        from android.runnable import run_on_ui_thread  # type: ignore
+
+        @run_on_ui_thread
+        def _on_ui():
+            try:
+                if self._exo_playing:
+                    self._sound.pause()
+                    self._exo_playing = False
+                    Clock.schedule_once(lambda _: (
+                        self._stop_progress_clock() or
+                        setattr(self._root.ids.play_btn, 'text', '>')
+                    ))
+                else:
+                    self._sound.play()
+                    self._exo_playing = True
+                    Clock.schedule_once(lambda _: (
+                        self._start_progress_clock() or
+                        setattr(self._root.ids.play_btn, 'text', '||')
+                    ))
+            except Exception as e:
+                Clock.schedule_once(lambda _dt: setattr(
+                    self._root.ids.now_playing, 'text', f'❌ pause: {e}'))
+
+        _on_ui()
 
     def toggle_play(self):
         if not self._sound:
@@ -2673,7 +2673,21 @@ class OwnlyApp(App):
         if self._proxy:
             self._proxy.stop()
             self._proxy = None
-        if self._sound:
+        if self._sound and platform == 'android':
+            _player = self._sound
+            try:
+                from android.runnable import run_on_ui_thread  # type: ignore
+                @run_on_ui_thread
+                def _release():
+                    try:
+                        _player.stop()
+                        _player.release()
+                    except Exception:
+                        pass
+                _release()
+            except Exception:
+                pass
+        elif self._sound:
             try:
                 self._sound.stop()
                 if hasattr(self._sound, 'release'):
