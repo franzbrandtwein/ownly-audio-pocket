@@ -1,9 +1,18 @@
 name: Build Binaries
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      enabled:
+        description: 'Manually disabled — set to true to run'
+        required: true
+        default: 'false'
+
+# Automatic builds disabled — re-enable by restoring push trigger.
+# on:
+#   push:
+#     branches: [main]
+#   workflow_dispatch:
 
 jobs:
   build-linux:
