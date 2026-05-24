@@ -132,14 +132,20 @@ class _LocalProxy(threading.Thread):
             hdr += 'Accept-Ranges: bytes\r\nConnection: close\r\n\r\n'
             conn.sendall(hdr.encode())
 
-            # Cache while streaming: only on first full (non-range) request
+            # Cache while streaming: only on first full (non-range) request.
+            # If opening the cache file fails for any reason, stream without caching.
             do_cache = (
                 self._cache_dest
                 and not self._cached
                 and range_start == 0
             )
             tmp_path = (self._cache_dest + '.tmp') if do_cache else None
-            tmp_file = open(tmp_path, 'wb') if tmp_path else None
+            tmp_file = None
+            if tmp_path:
+                try:
+                    tmp_file = open(tmp_path, 'wb')
+                except Exception:
+                    tmp_path = None   # can't cache — stream only, no error
             completed = False
             try:
                 with resp:
@@ -154,17 +160,23 @@ class _LocalProxy(threading.Thread):
             finally:
                 if tmp_file:
                     tmp_file.close()
-                if do_cache and completed and tmp_path:
-                    try:
-                        os.rename(tmp_path, self._cache_dest)
-                        self._cached = True
-                        if self._on_cached and self._track_id:
-                            tid = self._track_id
-                            from kivy.clock import Clock as _Clock
-                            _Clock.schedule_once(lambda _: self._on_cached(tid))
-                    except Exception:
+                if do_cache and tmp_path:
+                    if completed:
                         try:
-                            os.remove(tmp_path)
+                            os.rename(tmp_path, self._cache_dest)
+                            self._cached = True
+                            if self._on_cached and self._track_id:
+                                tid = self._track_id
+                                from kivy.clock import Clock as _Clock
+                                _Clock.schedule_once(lambda _: self._on_cached(tid))
+                        except Exception:
+                            try:
+                                os.remove(tmp_path)
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            os.remove(tmp_path)   # partial — discard
                         except Exception:
                             pass
         except Exception:
