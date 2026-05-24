@@ -706,7 +706,7 @@ KV = """
 <MenuPopup>:
     title: '☰ Menü'
     size_hint: .8, None
-    height: dp(230)
+    height: dp(278)
     auto_dismiss: True
     BoxLayout:
         orientation: 'vertical'
@@ -733,8 +733,50 @@ KV = """
             height: dp(44)
             background_color: (.2, .3, .5, 1)
             on_release: root.dismiss(); app.open_settings()
+        Button:
+            text: '📋  Logs'
+            font_size: dp(14)
+            size_hint_y: None
+            height: dp(44)
+            background_color: (.4, .25, .1, 1)
+            on_release: root.dismiss(); app.open_log_popup()
 
-<SettingsPopup>:
+<LogPopup>:
+    title: '📋 Debug-Log'
+    size_hint: .97, .85
+    auto_dismiss: True
+    BoxLayout:
+        orientation: 'vertical'
+        spacing: dp(6)
+        padding: dp(8)
+        ScrollView:
+            id: log_scroll
+            Label:
+                id: log_label
+                text: ''
+                font_size: dp(11)
+                color: (.85, .95, .75, 1)
+                halign: 'left'
+                valign: 'top'
+                text_size: self.width, None
+                size_hint_y: None
+                height: self.texture_size[1]
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(8)
+            Button:
+                text: 'Löschen'
+                font_size: dp(13)
+                background_color: (.5, .15, .15, 1)
+                on_release: app.clear_log()
+            Button:
+                text: 'Schließen'
+                font_size: dp(13)
+                background_color: (.25, .25, .25, 1)
+                on_release: root.dismiss()
+
+
     title: 'Einstellungen'
     size_hint: .92, None
     height: dp(260)
@@ -1084,6 +1126,9 @@ class OwnlyRoot(BoxLayout):
     pass
 
 
+class LogPopup(Popup):
+    pass
+
 class ConnectionsPopup(Popup):
     pass
 
@@ -1374,6 +1419,8 @@ class OwnlyApp(App):
         self._embedded_server = EmbeddedServer()
         self._server_popup    = None
         self._settings_popup  = None
+        self._log_popup       = None
+        self._log_lines       = []   # list of str, max 200
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
@@ -2060,6 +2107,7 @@ class OwnlyApp(App):
                 if self.auto_cache_on_play and tid and tid not in self._cached_ids:
                     cache_dest = self._cache_path(tid)
                 def _status(msg):
+                    self.log(msg)
                     Clock.schedule_once(
                         lambda _: setattr(self._root.ids.now_playing, 'text', msg))
 
@@ -2139,6 +2187,7 @@ class OwnlyApp(App):
 
     def _setup_exoplayer(self, url, label):
         """Main-thread: release old player, create ExoPlayer, prepare and play."""
+        self.log(f'setup_exo: {url[-50:]}')
         self._root.ids.now_playing.text = f'DBG setup_exo: {url[-40:]}'
         self._acquire_wifi_lock()  # keep WiFi radio on for proxy streaming
         try:
@@ -2361,6 +2410,44 @@ class OwnlyApp(App):
         btn.background_color = (.93, .4, .2, 1) if self._shuffle else (.18, .18, .18, 1)
 
     # ── QR scan ──────────────────────────────────────────────────────────────
+
+    # ── Debug log ─────────────────────────────────────────────────────────────
+
+    def log(self, msg):
+        """Append a line to the debug log. Thread-safe via Clock."""
+        import time as _time
+        ts = _time.strftime('%H:%M:%S')
+        line = f'[{ts}] {msg}'
+        def _append(_dt=None):
+            self._log_lines.append(line)
+            if len(self._log_lines) > 200:
+                self._log_lines = self._log_lines[-200:]
+            if self._log_popup:
+                self._refresh_log_view()
+        Clock.schedule_once(_append)
+
+    def _refresh_log_view(self):
+        if not self._log_popup:
+            return
+        self._log_popup.ids.log_label.text = '\n'.join(self._log_lines)
+        # scroll to bottom
+        def _scroll(_dt=None):
+            if self._log_popup:
+                self._log_popup.ids.log_scroll.scroll_y = 0
+        Clock.schedule_once(_scroll)
+
+    def clear_log(self):
+        self._log_lines = []
+        if self._log_popup:
+            self._log_popup.ids.log_label.text = ''
+
+    def open_log_popup(self):
+        if self._log_popup is None:
+            self._log_popup = LogPopup()
+            self._log_popup.bind(on_dismiss=lambda _: setattr(self, '_log_popup', None))
+        self._refresh_log_view()
+        self._log_popup.open()
+        Clock.schedule_once(lambda _: self._refresh_log_view())
 
     def open_menu(self):
         MenuPopup().open()
