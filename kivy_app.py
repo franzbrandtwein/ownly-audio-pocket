@@ -1850,7 +1850,7 @@ class OwnlyApp(App):
                 PythonActivity.mActivity.WIFI_SERVICE)
             if self._wifi_lock is None:
                 self._wifi_lock = wm.createWifiLock(
-                    WifiManager.WIFI_MODE_FULL, 'OwnlyAudioPocket::Stream')
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF, 'OwnlyAudioPocket::Stream')
             if not self._wifi_lock.isHeld():
                 self._wifi_lock.acquire()
         except Exception:
@@ -2079,10 +2079,10 @@ class OwnlyApp(App):
 
             player = ExoPlayerBuilder(PythonActivity.mActivity).build()
 
-            # Hold a CPU wake lock so audio keeps playing with screen off.
+            # Hold CPU + WiFi wake lock so audio keeps playing with screen off.
+            # C.WAKE_MODE_NETWORK = 2: acquires both PARTIAL_WAKE_LOCK and WifiLock.
             try:
-                PowerManager = autoclass('android.os.PowerManager')
-                player.setWakeMode(PythonActivity.mActivity, PowerManager.PARTIAL_WAKE_LOCK)
+                player.setWakeMode(PythonActivity.mActivity, 2)
             except Exception:
                 pass
 
