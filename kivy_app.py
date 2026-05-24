@@ -2207,11 +2207,11 @@ class OwnlyApp(App):
             MediaItem = autoclass('androidx.media3.common.MediaItem')
             Looper = autoclass('android.os.Looper')
 
-            # Ensure this thread has a Looper (required by ExoPlayer).
-            try:
-                Looper.prepare()
-            except Exception:
-                pass  # already prepared
+            # Always use the Android main Looper so ExoPlayer's internal
+            # message queue is processed — Kivy may run on a non-main thread
+            # whose Looper.loop() is never called, freezing ExoPlayer in BUFFERING.
+            main_looper = Looper.getMainLooper()
+            self.log(f'exo looper: {main_looper}')
 
             # Release old player on the correct thread.
             for old in (self._old_sound, self._sound):
@@ -2223,7 +2223,7 @@ class OwnlyApp(App):
             self._old_sound = None
             self._sound = None
 
-            player = ExoPlayerBuilder(PythonActivity.mActivity).build()
+            player = ExoPlayerBuilder(PythonActivity.mActivity).setLooper(main_looper).build()
 
             # Hold CPU + WiFi wake lock so audio keeps playing with screen off.
             # C.WAKE_MODE_NETWORK = 2: acquires both PARTIAL_WAKE_LOCK and WifiLock.
