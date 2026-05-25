@@ -134,17 +134,33 @@ class _LocalProxy(threading.Thread):
             except Exception as e:
                 self._dbg(f'proxy ERR urlopen: {e}')
                 raise
+            srv_status = resp.status  # 200 or 206
             total = int(resp.headers.get('Content-Length', 0))
             self._dbg(f'proxy: server OK {total}B')
+
+            # If we asked for a range but server returned 200 (no Range support),
+            # we must skip range_start bytes so ExoPlayer gets the right data.
+            skip_bytes = range_start if (range_start > 0 and srv_status == 200) else 0
+            if skip_bytes:
+                self._dbg(f'proxy: server kein Range, skip {skip_bytes}B')
+                skipped = 0
+                while skipped < skip_bytes:
+                    chunk = resp.read(min(65536, skip_bytes - skipped))
+                    if not chunk:
+                        break
+                    skipped += len(chunk)
+                effective_total = max(0, total - skip_bytes)
+            else:
+                effective_total = total
+
             status = 206 if range_start > 0 else 200
             status_text = 'Partial Content' if status == 206 else 'OK'
-
             hdr = f'HTTP/1.1 {status} {status_text}\r\nContent-Type: audio/mpeg\r\n'
-            if total:
-                hdr += f'Content-Length: {total}\r\n'
+            if effective_total:
+                hdr += f'Content-Length: {effective_total}\r\n'
             if range_start > 0:
-                total_hint = total + range_start
-                hdr += f'Content-Range: bytes {range_start}-{total_hint - 1}/{total_hint}\r\n'
+                total_full = (total if skip_bytes else total + range_start)
+                hdr += f'Content-Range: bytes {range_start}-{total_full - 1}/{total_full}\r\n'
             hdr += 'Accept-Ranges: bytes\r\nConnection: close\r\n\r\n'
             conn.sendall(hdr.encode())
 
@@ -343,14 +359,37 @@ class EmbeddedServer:
                             idx = int(path[7:])
                             fp = tracks_ref[idx]['abs']
                             size = os.path.getsize(fp)
-                            self.send_response(200)
+                            # Parse Range header
+                            range_hdr = self.headers.get('Range', '')
+                            start = 0
+                            end = size - 1
+                            if range_hdr.startswith('bytes='):
+                                parts = range_hdr[6:].split('-')
+                                try:
+                                    start = int(parts[0]) if parts[0] else 0
+                                    end = int(parts[1]) if len(parts) > 1 and parts[1] else size - 1
+                                except ValueError:
+                                    pass
+                            length = end - start + 1
+                            if start > 0 or end < size - 1:
+                                self.send_response(206)
+                                self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                            else:
+                                self.send_response(200)
                             self.send_header('Content-Type', 'audio/mpeg')
-                            self.send_header('Content-Length', str(size))
+                            self.send_header('Content-Length', str(length))
                             self.send_header('Accept-Ranges', 'bytes')
                             self.send_header('Access-Control-Allow-Origin', '*')
                             self.end_headers()
                             with open(fp, 'rb') as f:
-                                self.wfile.write(f.read())
+                                f.seek(start)
+                                remaining = length
+                                while remaining > 0:
+                                    chunk = f.read(min(65536, remaining))
+                                    if not chunk:
+                                        break
+                                    self.wfile.write(chunk)
+                                    remaining -= len(chunk)
                         except Exception:
                             self.send_response(404)
                             self.end_headers()
