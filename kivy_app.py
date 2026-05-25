@@ -53,26 +53,32 @@ _SOAP_ENV  = 'http://schemas.xmlsoap.org/soap/envelope/'
 # Local streaming proxy — lets ExoPlayer stream HTTP without cleartext policy
 # ---------------------------------------------------------------------------
 class _LocalProxy(threading.Thread):
-    """Single-use HTTP proxy on 127.0.0.1 (cleartext always allowed).
+    """Prefetching HTTP proxy on 127.0.0.1 (cleartext always allowed).
 
     ExoPlayer → http://127.0.0.1:<port>/
-    Proxy      → urllib (bypasses Android NetworkSecurityPolicy) → remote URL
+    Proxy      → downloads full file to temp buffer → serves ExoPlayer
 
-    Supports Range requests so ExoPlayer can seek without re-downloading.
+    The file is downloaded to a temp file immediately when the proxy starts,
+    independently of ExoPlayer's read rate.  ExoPlayer connections (including
+    Range requests after initial buffering) are served straight from the temp
+    file — no second server connection needed.  This avoids WiFi-sleep
+    reconnection failures mid-track.
 
-    Optional cache_dest: if set, the first full response (no Range header) is
-    written to cache_dest+'.tmp' and renamed to cache_dest on completion.
-    on_cached(track_id) is called on success.
+    Optional cache_dest: temp file is renamed to cache_dest when the download
+    completes.  on_cached(track_id) is called on the Kivy thread on success.
     """
+
+    _CHUNK = 65536
+    _MAX_RETRIES = 4          # retry server connection on transient errors
+    _RETRY_DELAY = 2.0        # seconds between retries
 
     def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None, on_debug=None):
         super().__init__(daemon=True)
-        self.remote_url = remote_url
+        self.remote_url  = remote_url
         self._cache_dest = cache_dest
         self._track_id   = track_id
         self._on_cached  = on_cached
-        self._on_debug   = on_debug   # callable(str) — called from background thread
-        self._cached     = False   # only cache once (first full request)
+        self._on_debug   = on_debug
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind(('127.0.0.1', 0))
@@ -80,14 +86,30 @@ class _LocalProxy(threading.Thread):
         self.port = self._srv.getsockname()[1]
         self._stopped = False
 
+        # Prefetch state — written by download thread, read by handle threads
+        import tempfile as _tf
+        self._tmp_path   = (cache_dest + '.tmp') if cache_dest else \
+                           _tf.mktemp(suffix='.audio.tmp')
+        self._dl_total   = 0     # Content-Length from server (0 = unknown)
+        self._dl_written = 0     # bytes written to _tmp_path so far
+        self._dl_done    = False # True when download finished successfully
+        self._dl_error   = None  # Exception if download failed
+        self._dl_cond    = threading.Condition()  # notified on each chunk + done/error
+
     def stop(self):
         self._stopped = True
         try:
             self._srv.close()
         except Exception:
             pass
+        # Wake any waiting _handle threads so they can exit
+        with self._dl_cond:
+            self._dl_cond.notify_all()
 
     def run(self):
+        # Start background download immediately — before ExoPlayer even connects
+        threading.Thread(target=self._download_worker, daemon=True).start()
+        # Accept ExoPlayer connections
         while not self._stopped:
             try:
                 self._srv.settimeout(2.0)
@@ -96,12 +118,79 @@ class _LocalProxy(threading.Thread):
                 continue
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
 
+    # ── Download worker ──────────────────────────────────────────────────────
+
     def _dbg(self, msg):
         if self._on_debug:
             try:
                 self._on_debug(msg)
             except Exception:
                 pass
+
+    def _download_worker(self):
+        """Download full file to temp with retries.  Notifies _dl_cond on progress."""
+        import time as _time
+        last_err = None
+        for attempt in range(self._MAX_RETRIES):
+            if self._stopped:
+                return
+            if attempt:
+                _time.sleep(self._RETRY_DELAY)
+                self._dbg(f'proxy: retry {attempt}/{self._MAX_RETRIES - 1}')
+            try:
+                resp = urllib.request.urlopen(self.remote_url, timeout=60)
+                total = int(resp.headers.get('Content-Length', 0))
+                with self._dl_cond:
+                    self._dl_total = total
+                    self._dl_cond.notify_all()
+                self._dbg(f'proxy: server OK {total}B')
+                if self._cache_dest:
+                    self._dbg(f'proxy: cache → {self._tmp_path[-40:]}')
+                written = 0
+                with open(self._tmp_path, 'wb') as f:
+                    while not self._stopped:
+                        chunk = resp.read(self._CHUNK)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        written += len(chunk)
+                        with self._dl_cond:
+                            self._dl_written = written
+                            self._dl_cond.notify_all()
+                with self._dl_cond:
+                    self._dl_done = True
+                    self._dl_cond.notify_all()
+                self._dbg(f'proxy: download fertig {written}B')
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                self._dbg(f'proxy ERR urlopen: {e}')
+
+        if last_err:
+            with self._dl_cond:
+                self._dl_error = last_err
+                self._dl_cond.notify_all()
+            return
+
+        # Rename to final cache path if requested
+        if self._cache_dest and not self._stopped:
+            try:
+                os.rename(self._tmp_path, self._cache_dest)
+                if self._on_cached and self._track_id:
+                    tid = self._track_id
+                    from kivy.clock import Clock as _Clock
+                    _Clock.schedule_once(lambda _: self._on_cached(tid))
+            except Exception:
+                try:
+                    os.remove(self._tmp_path)
+                except Exception:
+                    pass
+        elif not self._cache_dest:
+            # No caching requested — clean up temp file when proxy stops
+            pass  # cleaned in stop() is not needed; OS cleans on exit
+
+    # ── ExoPlayer connection handler ─────────────────────────────────────────
 
     def _handle(self, conn):
         try:
@@ -124,98 +213,56 @@ class _LocalProxy(threading.Thread):
                     except Exception:
                         pass
 
-            req = urllib.request.Request(self.remote_url)
-            if range_start > 0:
-                req.add_header('Range', f'bytes={range_start}-')
+            # Wait until we know the total size (download worker sets _dl_total)
+            with self._dl_cond:
+                while self._dl_total == 0 and not self._dl_done and \
+                      self._dl_error is None and not self._stopped:
+                    self._dl_cond.wait(timeout=30.0)
+                if self._dl_error or self._stopped:
+                    return
+                total = self._dl_total
 
-            self._dbg(f'proxy: öffne {self.remote_url[-40:]}')
-            try:
-                resp = urllib.request.urlopen(req, timeout=60)
-            except Exception as e:
-                self._dbg(f'proxy ERR urlopen: {e}')
-                raise
-            srv_status = resp.status  # 200 or 206
-            total = int(resp.headers.get('Content-Length', 0))
-            self._dbg(f'proxy: server OK {total}B')
-
-            # If we asked for a range but server returned 200 (no Range support),
-            # we must skip range_start bytes so ExoPlayer gets the right data.
-            skip_bytes = range_start if (range_start > 0 and srv_status == 200) else 0
-            if skip_bytes:
-                self._dbg(f'proxy: server kein Range, skip {skip_bytes}B')
-                skipped = 0
-                while skipped < skip_bytes:
-                    chunk = resp.read(min(65536, skip_bytes - skipped))
-                    if not chunk:
-                        break
-                    skipped += len(chunk)
-                effective_total = max(0, total - skip_bytes)
-            else:
-                effective_total = total
-
+            # Build response headers
             status = 206 if range_start > 0 else 200
             status_text = 'Partial Content' if status == 206 else 'OK'
+            content_len = max(0, total - range_start) if total else 0
             hdr = f'HTTP/1.1 {status} {status_text}\r\nContent-Type: audio/mpeg\r\n'
-            if effective_total:
-                hdr += f'Content-Length: {effective_total}\r\n'
-            if range_start > 0:
-                total_full = (total if skip_bytes else total + range_start)
-                hdr += f'Content-Range: bytes {range_start}-{total_full - 1}/{total_full}\r\n'
+            if content_len:
+                hdr += f'Content-Length: {content_len}\r\n'
+            if range_start > 0 and total:
+                hdr += f'Content-Range: bytes {range_start}-{total - 1}/{total}\r\n'
             hdr += 'Accept-Ranges: bytes\r\nConnection: close\r\n\r\n'
             conn.sendall(hdr.encode())
 
-            # Cache while streaming: only on first full (non-range) request.
-            # If opening the cache file fails for any reason, stream without caching.
-            do_cache = (
-                self._cache_dest
-                and not self._cached
-                and range_start == 0
-            )
-            tmp_path = (self._cache_dest + '.tmp') if do_cache else None
-            tmp_file = None
-            if tmp_path:
-                try:
-                    tmp_file = open(tmp_path, 'wb')
-                    self._dbg(f'proxy: cache → {tmp_path[-40:]}')
-                except Exception as e:
-                    self._dbg(f'proxy: cache open ERR: {e}')
-                    tmp_path = None   # can't cache — stream only, no error
-            completed = False
+            # Stream from temp file, waiting for download worker to write more
             bytes_sent = 0
-            try:
-                with resp:
-                    while not self._stopped:
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            completed = True
+            pos = range_start
+            with open(self._tmp_path, 'rb') as f:
+                f.seek(pos)
+                while not self._stopped:
+                    with self._dl_cond:
+                        # Wait until more data is available or download is done/errored
+                        while self._dl_written <= pos and not self._dl_done \
+                              and self._dl_error is None and not self._stopped:
+                            self._dl_cond.wait(timeout=2.0)
+                        available = self._dl_written
+                        done = self._dl_done
+
+                    if available <= pos and done:
+                        break  # No more data coming
+                    if self._stopped or self._dl_error:
+                        break
+
+                    chunk = f.read(self._CHUNK)
+                    if not chunk:
+                        if done:
                             break
-                        conn.sendall(chunk)
-                        bytes_sent += len(chunk)
-                        if tmp_file:
-                            tmp_file.write(chunk)
-            finally:
-                self._dbg(f'proxy: fertig {bytes_sent}B completed={completed}')
-                if tmp_file:
-                    tmp_file.close()
-                if do_cache and tmp_path:
-                    if completed:
-                        try:
-                            os.rename(tmp_path, self._cache_dest)
-                            self._cached = True
-                            if self._on_cached and self._track_id:
-                                tid = self._track_id
-                                from kivy.clock import Clock as _Clock
-                                _Clock.schedule_once(lambda _: self._on_cached(tid))
-                        except Exception:
-                            try:
-                                os.remove(tmp_path)
-                            except Exception:
-                                pass
-                    else:
-                        try:
-                            os.remove(tmp_path)   # partial — discard
-                        except Exception:
-                            pass
+                        continue
+                    conn.sendall(chunk)
+                    bytes_sent += len(chunk)
+                    pos += len(chunk)
+
+            self._dbg(f'proxy: fertig {bytes_sent}B')
         except Exception:
             pass
         finally:
