@@ -2296,10 +2296,7 @@ class OwnlyApp(App):
                 self._old_sound = None
                 self._sound = None
 
-                # WAKE_MODE_NETWORK = 2: ExoPlayer holds CPU + WiFi wake locks internally.
-                # setWakeMode must be on the Builder (not on the player instance).
                 player = ExoPlayerBuilder(PythonActivity.mActivity) \
-                    .setWakeMode(2) \
                     .setMediaSourceFactory(msf) \
                     .build()
 
