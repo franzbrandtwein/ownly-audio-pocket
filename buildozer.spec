@@ -40,7 +40,7 @@ android.extra_manifest_application_arguments = manifest_app_attrs.txt
 # The old p4a Python service ran in a *separate* process and therefore did NOT
 # protect the main process (where ExoPlayer lives) from being killed in background.
 android.add_src = src
-android.extra_manifest_xml = manifest_service.xml
+p4a.hook = p4a_hook.py
 
 # ── UI ────────────────────────────────────────────────────────────────────
 orientation = portrait

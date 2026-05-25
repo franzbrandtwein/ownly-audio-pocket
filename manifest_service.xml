@@ -1,4 +1,0 @@
-<service
-    android:name="de.ownly.ownlyaudiopocket.ForegroundAudioService"
-    android:foregroundServiceType="mediaPlayback"
-    android:exported="false" />
