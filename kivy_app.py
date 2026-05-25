@@ -2251,6 +2251,19 @@ class OwnlyApp(App):
                     .setMediaSourceFactory(msf) \
                     .build()
 
+                # Request and handle audio focus automatically.
+                # Without this, other apps silently steal focus and stop our playback.
+                try:
+                    AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
+                    C = autoclass('androidx.media3.common.C')
+                    audio_attrs = AudioAttributes.Builder() \
+                        .setUsage(C.USAGE_MEDIA) \
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
+                        .build()
+                    player.setAudioAttributes(audio_attrs, True)  # True = handle focus
+                except Exception:
+                    pass
+
                 # C.WAKE_MODE_NETWORK = 2: CPU + WiFi wake lock.
                 try:
                     player.setWakeMode(PythonActivity.mActivity, 2)
