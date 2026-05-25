@@ -2225,13 +2225,16 @@ class OwnlyApp(App):
                 MediaItem = autoclass('androidx.media3.common.MediaItem')
                 DefaultHttpDataSourceFactory = autoclass(
                     'androidx.media3.datasource.DefaultHttpDataSource$Factory')
+                DefaultDataSourceFactory = autoclass(
+                    'androidx.media3.datasource.DefaultDataSource$Factory')
                 ProgressiveMediaSourceFactory = autoclass(
                     'androidx.media3.exoplayer.source.ProgressiveMediaSource$Factory')
 
-                # 30s connect + read timeout so WiFi-wakeup delay doesn't abort playback
-                dsf = DefaultHttpDataSourceFactory()
-                dsf.setConnectTimeoutMs(30000)
-                dsf.setReadTimeoutMs(30000)
+                # 30s HTTP timeout; wrap in DefaultDataSource so file:// also works
+                http_dsf = DefaultHttpDataSourceFactory()
+                http_dsf.setConnectTimeoutMs(30000)
+                http_dsf.setReadTimeoutMs(30000)
+                dsf = DefaultDataSourceFactory(PythonActivity.mActivity, http_dsf)
                 msf = ProgressiveMediaSourceFactory(dsf)
 
                 # Release old player (must be on UI thread too).
