@@ -720,28 +720,28 @@ KV = """
         spacing: dp(8)
         padding: dp(12)
         Button:
-            text: '🔗  Verbindungen'
+            text: 'Verbindungen'
             font_size: dp(14)
             size_hint_y: None
             height: dp(44)
             background_color: (.25, .25, .25, 1)
             on_release: root.dismiss(); app.open_connections()
         Button:
-            text: '🖥  Server'
+            text: 'Server'
             font_size: dp(14)
             size_hint_y: None
             height: dp(44)
             background_color: (.18, .55, .18, 1)
             on_release: root.dismiss(); app.open_server_popup()
         Button:
-            text: '⚙  Einstellungen'
+            text: 'Einstellungen'
             font_size: dp(14)
             size_hint_y: None
             height: dp(44)
             background_color: (.2, .3, .5, 1)
             on_release: root.dismiss(); app.open_settings()
         Button:
-            text: '📋  Logs'
+            text: 'Logs'
             font_size: dp(14)
             size_hint_y: None
             height: dp(44)
@@ -749,7 +749,7 @@ KV = """
             on_release: root.dismiss(); app.open_log_popup()
 
 <LogPopup>:
-    title: '📋 Debug-Log'
+    title: 'Debug-Log'
     size_hint: .97, .85
     auto_dismiss: True
     BoxLayout:
@@ -833,7 +833,7 @@ KV = """
                 size_hint_x: None
                 width: dp(44)
                 font_size: dp(18)
-                text: '📁'
+                text: '..'
                 background_color: (.3, .3, .3, 1)
                 on_release: app.open_dir_chooser(offline_dir_input)
             Button:
@@ -1301,7 +1301,7 @@ class QRScanPopup(Popup):
         tex  = Texture.create(size=(w, h), colorfmt='rgb')
         tex.blit_buffer(flip.tobytes(), colorfmt='rgb', bufferfmt='ubyte')
         self._cam_img.texture = tex
-        self._status.text = '🔍 QR Code suchen …'
+        self._status.text = 'QR Code suchen …'
 
     def _update_android(self, dt):
         if not self._running or self._kivy_cam is None:
@@ -1322,7 +1322,7 @@ class QRScanPopup(Popup):
         if data:
             self._finish(data)
         else:
-            self._status.text = '🔍 QR Code suchen …'
+            self._status.text = 'QR Code suchen …'
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -1665,7 +1665,7 @@ class OwnlyApp(App):
             Clock.schedule_once(lambda _: self._set_list_data(self._filtered))
             Clock.schedule_once(lambda _: setattr(
                 self._root.ids.now_playing, 'text',
-                f'📁 {n} Tracks offline verfügbar'))
+                f'{n} Tracks offline verfügbar'))
 
     def _load_cached_ids(self, *_):
         d = self._cache_dir()
@@ -1774,7 +1774,7 @@ class OwnlyApp(App):
 
     def autodiscover(self):
         """Listen for UDP broadcast from server, then connect automatically."""
-        self._root.ids.now_playing.text = '🔍 Suche Server …'
+        self._root.ids.now_playing.text = 'Suche Server …'
         threading.Thread(target=self._do_autodiscover, daemon=True).start()
 
     def _do_autodiscover(self):
