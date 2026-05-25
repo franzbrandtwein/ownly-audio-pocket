@@ -1469,8 +1469,10 @@ class OwnlyApp(App):
         self._log_popup       = None
         self._log_lines       = []   # list of str, max 200
         self._log_queue       = queue.Queue()  # thread-safe log buffer
-        self._pending_auto_next = False         # set from Java thread, drained on Kivy thread
+        self._pending_auto_next = False         # set from Java thread, checked by daemon thread
         Clock.schedule_interval(self._drain_log_queue, 0.25)
+        # Python daemon thread polls _pending_auto_next — keeps running when SDL is paused
+        threading.Thread(target=self._auto_next_watcher, daemon=True).start()
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
@@ -2203,9 +2205,9 @@ class OwnlyApp(App):
             self._release_dl_wake_lock()
 
     def _setup_exoplayer(self, url, label):
-        """Schedules ExoPlayer creation on the Android UI thread (required by media3)."""
+        """Schedules ExoPlayer creation on the Android UI thread (required by media3).
+        Safe to call from any thread — no Kivy UI access here."""
         self.log(f'setup_exo: {url[-50:]}')
-        self._root.ids.now_playing.text = f'▶ {label[:40]}'
         self._acquire_wifi_lock()
 
         if platform != 'android':
@@ -2353,6 +2355,104 @@ class OwnlyApp(App):
         self._exo_playing = False
         Clock.schedule_once(lambda _: self._auto_next())
 
+    def _auto_next_watcher(self):
+        """Daemon thread: polls _pending_auto_next every 200ms.
+
+        Python daemon threads are NOT paused when Android turns the display off —
+        only the SDL/Kivy main thread pauses. This ensures the next track starts
+        even with the screen off.
+        """
+        import time as _time
+        while True:
+            _time.sleep(0.2)
+            if not self._pending_auto_next:
+                continue
+            self._pending_auto_next = False
+            if platform == 'android':
+                self._trigger_next_android_bg()
+            else:
+                # Desktop: SDL is never paused, safe to use Clock
+                Clock.schedule_once(lambda _: self._auto_next())
+
+    def _trigger_next_android_bg(self):
+        """Start the next track from a background thread (safe when SDL is paused).
+
+        Does not touch Kivy UI directly — all UI updates are queued via
+        Clock.schedule_once and fire when the user brings the app back to
+        foreground. Audio playback starts immediately via @run_on_ui_thread.
+        """
+        if not self._filtered:
+            self.log('auto_next: keine Tracks')
+            return
+
+        if self._offline_only and self._servers:
+            threading.Thread(target=self._probe_servers_for_reconnect, daemon=True).start()
+
+        if self._shuffle:
+            candidates = [t for t in self._filtered if t['idx'] != self._active_srv_idx]
+            nxt = random.choice(candidates) if candidates else self._filtered[0]
+        else:
+            cur_pos = next(
+                (i for i, t in enumerate(self._filtered) if t['idx'] == self._active_srv_idx), -1
+            )
+            nxt = self._filtered[(cur_pos + 1) % len(self._filtered)]
+
+        idx = nxt['idx']
+        track = next((t for t in self._all_tracks if t['idx'] == idx), None)
+        if not track:
+            return
+
+        label = f'{track["title"]}  —  {track["band"]}'
+        self.log(f'auto_next → {track["title"][:30]}')
+        self._active_srv_idx = idx
+
+        # Stash old player for cleanup inside _setup_exoplayer (on UI thread)
+        self._old_sound = self._sound
+        self._sound = None
+
+        # Stop old proxy
+        if self._proxy:
+            self._proxy.stop()
+            self._proxy = None
+
+        # Determine URL (local cache or remote stream)
+        local_path = self._cache_path(track.get('track_id', ''))
+        if track.get('track_id') and os.path.isfile(local_path):
+            exo_url = local_path
+        else:
+            exo_url = f'http://{self._server_host}:{self._soap_port}/audio/{idx}'
+
+        if exo_url.startswith('http'):
+            tid = track.get('track_id')
+            cache_dest = None
+            if self.auto_cache_on_play and tid and tid not in self._cached_ids:
+                cache_dest = self._cache_path(tid)
+            proxy = _LocalProxy(exo_url,
+                                cache_dest=cache_dest,
+                                track_id=tid,
+                                on_cached=self._on_track_cached_by_proxy,
+                                on_debug=self.log)
+            self._proxy = proxy
+            proxy.start()
+            self.log(f'proxy:{proxy.port} → {exo_url[-35:]}')
+            exo_url = f'http://127.0.0.1:{proxy.port}/'
+
+        # _setup_exoplayer is safe from any thread: no Kivy UI access,
+        # inner @run_on_ui_thread posts to Android Looper (always running).
+        self._setup_exoplayer(exo_url, label)
+        self._start_audio_service(label)
+
+        # Queue UI updates — fired when SDL resumes (user unlocks screen)
+        def _ui_sync(_dt, _label=label, _idx=idx):
+            self._stop_progress_clock()
+            self._apply_active_marker()
+            try:
+                self._root.ids.now_playing.text = f'> {_label}'
+                self._root.ids.play_btn.text = '||'
+            except Exception:
+                pass
+        Clock.schedule_once(_ui_sync)
+
     def _auto_next(self):
         self._reset_progress()
         if not self._filtered:
@@ -2459,12 +2559,7 @@ class OwnlyApp(App):
         self._log_queue.put(f'[{ts}] {msg}')
 
     def _drain_log_queue(self, dt):
-        """Called every 250ms on main thread — drains thread-safe log queue and pending events."""
-        # Process pending auto-next (set from ExoPlayer callback on Android UI thread)
-        if self._pending_auto_next:
-            self._pending_auto_next = False
-            self._auto_next()
-
+        """Called every 250ms on main thread — drains thread-safe log queue."""
         added = False
         while True:
             try:
