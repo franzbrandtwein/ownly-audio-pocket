@@ -140,14 +140,16 @@ class _LocalProxy(threading.Thread):
             try:
                 resp = urllib.request.urlopen(self.remote_url, timeout=60)
                 total = int(resp.headers.get('Content-Length', 0))
-                with self._dl_cond:
-                    self._dl_total = total
-                    self._dl_cond.notify_all()
                 self._dbg(f'proxy: server OK {total}B')
                 if self._cache_dest:
                     self._dbg(f'proxy: cache → {self._tmp_path[-40:]}')
                 written = 0
+                # Open file BEFORE notifying _handle threads — prevents FileNotFoundError
+                # race where _handle tries to open the file before it is created.
                 with open(self._tmp_path, 'wb') as f:
+                    with self._dl_cond:
+                        self._dl_total = total
+                        self._dl_cond.notify_all()
                     while not self._stopped:
                         chunk = resp.read(self._CHUNK)
                         if not chunk:
@@ -2294,12 +2296,17 @@ class OwnlyApp(App):
                 self._old_sound = None
                 self._sound = None
 
+                # WAKE_MODE_NETWORK = 2: ExoPlayer holds CPU + WiFi wake locks internally.
+                # setWakeMode must be on the Builder (not on the player instance).
                 player = ExoPlayerBuilder(PythonActivity.mActivity) \
+                    .setWakeMode(2) \
                     .setMediaSourceFactory(msf) \
                     .build()
 
-                # Request and handle audio focus automatically.
-                # Without this, other apps silently steal focus and stop our playback.
+                # Declare audio content type (music) but do NOT manage focus automatically.
+                # handleAudioFocus=False keeps music playing even when other apps open —
+                # focus management would pause us whenever a browser video or notification
+                # requests focus, which is more disruptive than playing simultaneously.
                 try:
                     AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
                     C = autoclass('androidx.media3.common.C')
@@ -2307,13 +2314,7 @@ class OwnlyApp(App):
                         .setUsage(C.USAGE_MEDIA) \
                         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
                         .build()
-                    player.setAudioAttributes(audio_attrs, True)  # True = handle focus
-                except Exception:
-                    pass
-
-                # C.WAKE_MODE_NETWORK = 2: CPU + WiFi wake lock.
-                try:
-                    player.setWakeMode(PythonActivity.mActivity, 2)
+                    player.setAudioAttributes(audio_attrs, False)
                 except Exception:
                     pass
 
