@@ -2014,16 +2014,16 @@ class OwnlyApp(App):
     # ── Playback ─────────────────────────────────────────────────────────────
 
     def _acquire_wifi_lock(self):
-        """Keep WiFi radio awake so streaming proxy doesn't lose connection."""
+        """Keep WiFi radio awake so streaming proxy doesn't lose connection.
+        Uses WIFI_MODE_FULL (= 1) which works with display off.
+        WIFI_MODE_FULL_HIGH_PERF requires screen-on since API 29."""
         try:
             from jnius import autoclass as _ac  # type: ignore
-            WifiManager = _ac('android.net.wifi.WifiManager')
             PythonActivity = _ac('org.kivy.android.PythonActivity')
             wm = PythonActivity.mActivity.getSystemService(
                 PythonActivity.mActivity.WIFI_SERVICE)
             if self._wifi_lock is None:
-                self._wifi_lock = wm.createWifiLock(
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF, 'OwnlyAudioPocket::Stream')
+                self._wifi_lock = wm.createWifiLock(1, 'OwnlyAudioPocket::Stream')  # 1 = WIFI_MODE_FULL
             if not self._wifi_lock.isHeld():
                 self._wifi_lock.acquire()
         except Exception:
@@ -2223,6 +2223,16 @@ class OwnlyApp(App):
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
                 MediaItem = autoclass('androidx.media3.common.MediaItem')
+                DefaultHttpDataSourceFactory = autoclass(
+                    'androidx.media3.datasource.DefaultHttpDataSource$Factory')
+                ProgressiveMediaSourceFactory = autoclass(
+                    'androidx.media3.exoplayer.source.ProgressiveMediaSource$Factory')
+
+                # 30s connect + read timeout so WiFi-wakeup delay doesn't abort playback
+                dsf = DefaultHttpDataSourceFactory()
+                dsf.setConnectTimeoutMs(30000)
+                dsf.setReadTimeoutMs(30000)
+                msf = ProgressiveMediaSourceFactory(dsf)
 
                 # Release old player (must be on UI thread too).
                 for old in (self._old_sound, self._sound):
@@ -2234,7 +2244,9 @@ class OwnlyApp(App):
                 self._old_sound = None
                 self._sound = None
 
-                player = ExoPlayerBuilder(PythonActivity.mActivity).build()
+                player = ExoPlayerBuilder(PythonActivity.mActivity) \
+                    .setMediaSourceFactory(msf) \
+                    .build()
 
                 # C.WAKE_MODE_NETWORK = 2: CPU + WiFi wake lock.
                 try:
@@ -2381,6 +2393,9 @@ class OwnlyApp(App):
         Clock.schedule_once and fire when the user brings the app back to
         foreground. Audio playback starts immediately via @run_on_ui_thread.
         """
+        # Acquire WiFi lock early so the radio is awake before the proxy needs it
+        self._acquire_wifi_lock()
+
         if not self._filtered:
             self.log('auto_next: keine Tracks')
             return
