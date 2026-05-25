@@ -1430,6 +1430,7 @@ class OwnlyApp(App):
         self._log_popup       = None
         self._log_lines       = []   # list of str, max 200
         self._log_queue       = queue.Queue()  # thread-safe log buffer
+        self._pending_auto_next = False         # set from Java thread, drained on Kivy thread
         Clock.schedule_interval(self._drain_log_queue, 0.25)
 
         Clock.schedule_once(self._load_servers, 0)
@@ -2202,7 +2203,7 @@ class OwnlyApp(App):
 
                 ExoListenerClass = _get_exo_listener_class()
                 self._mp_listener = ExoListenerClass(
-                    lambda: Clock.schedule_once(lambda _dt: self._auto_next()),
+                    lambda: setattr(self, '_pending_auto_next', True),
                     lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
                     lambda s: self.log(s),
                 )
@@ -2316,6 +2317,7 @@ class OwnlyApp(App):
     def _auto_next(self):
         self._reset_progress()
         if not self._filtered:
+            self.log('auto_next: keine Tracks in Liste')
             return
         # If offline, silently probe known servers — reconnect if one responds
         if self._offline_only and self._servers:
@@ -2329,6 +2331,7 @@ class OwnlyApp(App):
                 (i for i, t in enumerate(self._filtered) if t['idx'] == self._active_srv_idx), -1
             )
             nxt = self._filtered[(cur_pos + 1) % len(self._filtered)]
+        self.log(f'auto_next → {nxt["title"][:30]}')
         self.play_idx(nxt['idx'])
 
     def _probe_servers_for_reconnect(self):
@@ -2417,7 +2420,12 @@ class OwnlyApp(App):
         self._log_queue.put(f'[{ts}] {msg}')
 
     def _drain_log_queue(self, dt):
-        """Called every 250ms on main thread — drains thread-safe log queue."""
+        """Called every 250ms on main thread — drains thread-safe log queue and pending events."""
+        # Process pending auto-next (set from ExoPlayer callback on Android UI thread)
+        if self._pending_auto_next:
+            self._pending_auto_next = False
+            self._auto_next()
+
         added = False
         while True:
             try:
