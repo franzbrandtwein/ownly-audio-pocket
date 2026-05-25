@@ -750,7 +750,7 @@ KV = """
                 on_release: app.open_qr_scan(); root.dismiss()
 
 <MenuPopup>:
-    title: '☰ Menü'
+    title: 'Menü'
     size_hint: .8, None
     height: dp(278)
     auto_dismiss: True
@@ -1262,7 +1262,7 @@ class QRScanPopup(Popup):
             import cv2
             self._detector = cv2.QRCodeDetector()
         except ImportError:
-            self._status.text = '❌ OpenCV nicht verfügbar'
+            self._status.text = '[X] OpenCV nicht verfügbar'
             return
 
         if platform == 'android':
@@ -1274,7 +1274,7 @@ class QRScanPopup(Popup):
         import cv2
         self._cv_cap = cv2.VideoCapture(0)
         if not self._cv_cap.isOpened():
-            self._status.text = '❌ Keine Kamera gefunden'
+            self._status.text = '[X] Keine Kamera gefunden'
             return
         self._running = True
         self._tick = Clock.schedule_interval(self._update_desktop, 1 / 20)
@@ -1299,7 +1299,7 @@ class QRScanPopup(Popup):
         if results and all(results):
             self._start_kivy_camera()
         else:
-            self._status.text = '❌ Kamera-Berechtigung verweigert'
+            self._status.text = '[X] Kamera-Berechtigung verweigert'
 
     def _start_kivy_camera(self):
         from kivy.uix.camera import Camera  # type: ignore
@@ -1370,7 +1370,7 @@ class QRScanPopup(Popup):
         if self._tick:
             Clock.unschedule(self._tick)
         self._release_camera()
-        self._status.text = f'✓ Erkannt: {data}'
+        self._status.text = f'Erkannt: {data}'
         Clock.schedule_once(lambda _: self._deliver(data))
 
     def _deliver(self, data):
@@ -1528,7 +1528,7 @@ class OwnlyApp(App):
             os.makedirs(new_dir, exist_ok=True)
         except Exception as e:
             if self._settings_popup:
-                self._settings_popup.ids.offline_dir_status.text = f'❌ {e}'
+                self._settings_popup.ids.offline_dir_status.text = f'[X] {e}'
             return
 
         moved = 0
@@ -1548,7 +1548,7 @@ class OwnlyApp(App):
         self._save_settings()
         self._load_cached_ids()   # refresh index from new location
 
-        msg = f'✓ Verschoben: {moved} Dateien'
+        msg = f'Verschoben: {moved} Dateien'
         if errors:
             msg += f'  ({len(errors)} Fehler)'
         if self._settings_popup:
@@ -1755,7 +1755,7 @@ class OwnlyApp(App):
                 pass
             Clock.schedule_once(
                 lambda _: setattr(self._root.ids.now_playing, 'text',
-                                  f'❌ Download: {e}'))
+                                  f'[X] Download: {e}'))
 
     def download_album(self, album):
         for t in self._all_tracks:
@@ -1861,7 +1861,7 @@ class OwnlyApp(App):
             )
 
     def _on_discover_fail(self):
-        self._root.ids.now_playing.text = '❌ Kein Server gefunden (5 s Timeout)'
+        self._root.ids.now_playing.text = '[X] Kein Server gefunden (5s)'
 
     def _apply_android_insets(self, *_):
         from kivy.core.window import Window
@@ -1885,7 +1885,7 @@ class OwnlyApp(App):
             self._server_host = addr
         try:
             self._root.ids.status_dot.dot_color = (.9, .7, .1, 1)
-            self._root.ids.now_playing.text = '⏳ Verbinde …'
+            self._root.ids.now_playing.text = 'Verbinde …'
         except Exception:
             pass
         threading.Thread(
@@ -1970,7 +1970,7 @@ class OwnlyApp(App):
         self._set_list_data(self._filtered)
         self._root.ids.status_dot.dot_color = (.2, .9, .3, 1)
         n = len(tracks)
-        self._root.ids.now_playing.text = f'✓ {n} Tracks geladen'
+        self._root.ids.now_playing.text = f'{n} Tracks geladen'
         if self._current_addr:
             self._save_host(self._current_addr)
         self._save_track_meta(tracks)
@@ -1978,7 +1978,7 @@ class OwnlyApp(App):
     def _on_error(self, msg):
         try:
             self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
-            self._root.ids.now_playing.text = f'❌ {msg[:70]}'
+            self._root.ids.now_playing.text = f'[X] {msg[:70]}'
         except Exception:
             pass
 
@@ -1994,9 +1994,9 @@ class OwnlyApp(App):
             self._root.ids.status_dot.dot_color = (.9, .2, .2, 1)
             n = len(self._all_tracks)
             if n:
-                self._root.ids.now_playing.text = f'❌ {server_addr} offline – {n} Tracks verbleibend'
+                self._root.ids.now_playing.text = f'[X] {server_addr} offline – {n} Tracks'
             else:
-                self._root.ids.now_playing.text = f'❌ {server_addr} offline – keine Tracks mehr'
+                self._root.ids.now_playing.text = f'[X] {server_addr} offline'
         except Exception:
             pass
         if self._filtered:
@@ -2077,7 +2077,7 @@ class OwnlyApp(App):
             return
 
         label = f'{track["title"]}  —  {track["band"]}'
-        self._root.ids.now_playing.text = f'⏳ {label}'
+        self._root.ids.now_playing.text = f'{label}'
         self._root.ids.play_btn.text = '||'
 
         if self._sound:
@@ -2187,7 +2187,7 @@ class OwnlyApp(App):
                         pct = int(downloaded * 100 / total)
                         Clock.schedule_once(lambda _, p=pct, l=label:
                             setattr(self._root.ids.now_playing, 'text',
-                                    f'⏳ {l[:30]} {p}%'))
+                                    f'{l[:30]} {p}%'))
             tmp.close()
             self._tmp_file = tmp_path
             Clock.schedule_once(lambda _: self._setup_exoplayer(tmp_path, label))
@@ -2339,14 +2339,14 @@ class OwnlyApp(App):
             self._root.ids.now_playing.text = f'> {label}'
             self._start_progress_clock()
         else:
-            self._root.ids.now_playing.text = f'❌ Kein Audio-Backend: {label}'
+            self._root.ids.now_playing.text = f'[X] Kein Audio-Backend: {label}'
             self._root.ids.play_btn.text = '>'
 
     def _on_play_error(self, msg):
-        self.log(f'❌ {msg}')
+        self.log(f'[X] {msg}')
         self._exo_playing = False
         self._reset_progress()
-        self._root.ids.now_playing.text = f'❌ {msg[:60]}'
+        self._root.ids.now_playing.text = f'[X] {msg[:60]}'
         self._root.ids.play_btn.text = '>'
 
     def _on_track_ended(self, *_):
@@ -2412,7 +2412,7 @@ class OwnlyApp(App):
                     ))
             except Exception as e:
                 Clock.schedule_once(lambda _dt: setattr(
-                    self._root.ids.now_playing, 'text', f'❌ pause: {e}'))
+                    self._root.ids.now_playing, 'text', f'[X] pause: {e}'))
 
         _on_ui()
 
@@ -2659,7 +2659,7 @@ class OwnlyApp(App):
         """
         m = re.search(r'https?://([0-9a-zA-Z._-]+)(?::(\d+))?', data)
         if not m:
-            self._root.ids.now_playing.text = f'❌ Kein gültiger Server-Link: {data}'
+            self._root.ids.now_playing.text = f'[X] Kein Server-Link: {data}'
             return
         host = m.group(1)
         addr = f'{host}:8767'
