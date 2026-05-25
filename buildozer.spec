@@ -36,8 +36,11 @@ android.debug = False
 android.res_xml = res/xml/network_security_config.xml
 android.extra_manifest_application_arguments = manifest_app_attrs.txt
 
-# Foreground service: keeps the app alive during background audio playback
-services = Audio:service_audio.py:mediaPlayback
+# Java foreground service (main process) + its manifest declaration.
+# The old p4a Python service ran in a *separate* process and therefore did NOT
+# protect the main process (where ExoPlayer lives) from being killed in background.
+android.add_src = src
+android.extra_manifest_xml = manifest_service.xml
 
 # ── UI ────────────────────────────────────────────────────────────────────
 orientation = portrait

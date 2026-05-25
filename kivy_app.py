@@ -1994,17 +1994,18 @@ class OwnlyApp(App):
         except Exception:
             pass
 
-    def _start_audio_service(self):
-        """Start the Android foreground service to keep app alive in background."""
+    def _start_audio_service(self, track_label=''):
+        """Start the Java foreground service (main process) to keep app alive in background."""
         if platform != 'android':
             return
         try:
             from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Intent         = autoclass('android.content.Intent')
-            Build          = autoclass('android.os.Build')
-            ServiceAudio   = autoclass('de.ownly.ownlyaudiopocket.ServiceAudio')
-            intent = Intent(PythonActivity.mActivity, ServiceAudio)
+            PythonActivity       = autoclass('org.kivy.android.PythonActivity')
+            Intent               = autoclass('android.content.Intent')
+            Build                = autoclass('android.os.Build')
+            ForegroundAudioSvc   = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
+            intent = Intent(PythonActivity.mActivity, ForegroundAudioSvc)
+            intent.putExtra('track', track_label)
             if Build.VERSION.SDK_INT >= 26:
                 PythonActivity.mActivity.startForegroundService(intent)
             else:
@@ -2013,48 +2014,16 @@ class OwnlyApp(App):
             pass
 
     def _stop_audio_service(self):
-        """Stop the Android foreground service."""
+        """Stop the Java foreground service."""
         if platform != 'android':
             return
         try:
             from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Intent         = autoclass('android.content.Intent')
-            ServiceAudio   = autoclass('de.ownly.ownlyaudiopocket.ServiceAudio')
+            PythonActivity       = autoclass('org.kivy.android.PythonActivity')
+            Intent               = autoclass('android.content.Intent')
+            ForegroundAudioSvc   = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
             PythonActivity.mActivity.stopService(
-                Intent(PythonActivity.mActivity, ServiceAudio))
-        except Exception:
-            pass
-
-    def _update_audio_notification(self, track_label):
-        """Update the playback notification text shown while in background."""
-        if platform != 'android':
-            return
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Build          = autoclass('android.os.Build')
-            ctx = PythonActivity.mActivity
-            CHANNEL_ID = 'ownly_audio'
-            NOTIF_ID   = 1
-
-            try:
-                icon_id = ctx.getApplicationInfo().icon
-                if icon_id == 0:
-                    raise ValueError('no icon')
-            except Exception:
-                icon_id = autoclass('android.R$drawable').ic_dialog_info
-
-            nm = ctx.getSystemService(ctx.NOTIFICATION_SERVICE)
-            if Build.VERSION.SDK_INT >= 26:
-                builder = autoclass('android.app.Notification$Builder')(ctx, CHANNEL_ID)
-            else:
-                builder = autoclass('android.app.Notification$Builder')(ctx)
-            builder.setContentTitle('Ownly Audio')
-            builder.setContentText(track_label)
-            builder.setSmallIcon(icon_id)
-            builder.setOngoing(True)
-            nm.notify(NOTIF_ID, builder.build())
+                Intent(PythonActivity.mActivity, ForegroundAudioSvc))
         except Exception:
             pass
 
@@ -2118,8 +2087,6 @@ class OwnlyApp(App):
                     cache_dest = self._cache_path(tid)
                 def _status(msg):
                     self.log(msg)
-                    Clock.schedule_once(
-                        lambda _: setattr(self._root.ids.now_playing, 'text', msg))
 
                 proxy = _LocalProxy(url,
                                     cache_dest=cache_dest,
@@ -2128,7 +2095,7 @@ class OwnlyApp(App):
                                     on_debug=_status)
                 self._proxy = proxy
                 proxy.start()
-                _status(f'DBG proxy:{proxy.port} → {url[-35:]}')
+                self.log(f'proxy:{proxy.port} → {url[-35:]}')
                 Clock.schedule_once(
                     lambda _: self._setup_exoplayer(f'http://127.0.0.1:{proxy.port}/', label))
             else:
@@ -2261,8 +2228,7 @@ class OwnlyApp(App):
         self._root.ids.now_playing.text = f'> {label}'
         self._root.ids.play_btn.text = '||'
         self._start_progress_clock()
-        self._start_audio_service()
-        self._update_audio_notification(label)
+        self._start_audio_service(label)
 
     def _start_progress_clock(self):
         self._stop_progress_clock()
