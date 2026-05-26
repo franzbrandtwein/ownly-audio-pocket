@@ -1572,8 +1572,9 @@ class OwnlyApp(App):
         except Exception:
             self._log_file = None
 
-        # Always-on log server on port 8769 — no need to start the music server
-        threading.Thread(target=self._run_log_server, daemon=True).start()
+        # TCP log sender — streams every log line to log_server.py on the PC
+        self._tcp_log_queue = queue.Queue()
+        threading.Thread(target=self._run_tcp_log_sender, daemon=True).start()
 
         Clock.schedule_interval(self._drain_log_queue, 0.25)
         # Python daemon thread polls _pending_auto_next — keeps running when SDL is paused
@@ -2736,53 +2737,73 @@ class OwnlyApp(App):
 
     # ── Debug log ─────────────────────────────────────────────────────────────
 
-    def _run_log_server(self):
-        """Minimal HTTP server on port 8769 — always on, serves /log.
-        Open http://<phone-ip>:8769/ in any browser to watch the live log.
-        No need to start the music server."""
-        import http.server as _hs
-        import socketserver as _ss
-        log_file = self._log_file
+    def _run_tcp_log_sender(self):
+        """Send every log line to log_server.py on the PC via TCP.
 
-        class _LogHandler(_hs.BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
+        Connects to _server_host:9999. Waits until a server address is known,
+        then keeps a persistent connection. Reconnects automatically on failure.
+        Any lines queued while disconnected are held and sent after reconnect.
+        """
+        import socket as _s
+        import time as _t
+        _PORT = 9999
+        sock = None
+        pending = []
 
-            def do_GET(self):
+        while True:
+            # Drain pending + new lines into pending list
+            while True:
                 try:
-                    with open(log_file, 'r', errors='replace') as _lf:
-                        body = _lf.read()
-                except Exception as e:
-                    body = f'Log nicht verfügbar: {e}'
-                data = (
-                    '<html><head><meta charset="utf-8">'
-                    '<meta http-equiv="refresh" content="3">'
-                    '<style>body{font-family:monospace;font-size:12px;'
-                    'background:#111;color:#cfc;white-space:pre-wrap;padding:8px}'
-                    '</style></head><body>' +
-                    body.replace('&', '&amp;').replace('<', '&lt;') +
-                    '</body></html>'
-                ).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.send_header('Content-Length', str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                    pending.append(self._tcp_log_queue.get_nowait())
+                except Exception:
+                    break
 
-        class _S(_ss.ThreadingMixIn, _hs.HTTPServer):
-            allow_reuse_address = True
-            daemon_threads = True
-            def handle_error(self, *a):
+            host = getattr(self, '_server_host', '')
+            if not host:
+                _t.sleep(2)
+                continue
+
+            if sock is None:
+                try:
+                    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+                    sock.settimeout(5)
+                    sock.connect((host, _PORT))
+                    sock.settimeout(None)
+                except Exception:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    sock = None
+                    _t.sleep(5)
+                    continue
+
+            # Send all pending lines
+            failed = False
+            for line in pending:
+                try:
+                    sock.sendall((line + '\n').encode('utf-8'))
+                except Exception:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    sock = None
+                    failed = True
+                    break
+            if failed:
+                continue
+            pending.clear()
+
+            # Wait for next line (with timeout so we loop and check host changes)
+            try:
+                line = self._tcp_log_queue.get(timeout=10)
+                pending.append(line)
+            except Exception:
                 pass
-
-        try:
-            srv = _S(('0.0.0.0', 8769), _LogHandler)
-            srv.serve_forever()
-        except Exception:
-            pass
 
     def log(self, msg):
-        """Append a line to the debug log. Thread-safe via queue + direct file write."""
+        """Append a line to the debug log. Thread-safe via queue + direct file write + TCP."""
         ts = time.strftime('%H:%M:%S')
         line = f'[{ts}] {msg}'
         self._log_queue.put(line)
@@ -2795,6 +2816,11 @@ class OwnlyApp(App):
                         _lf.write(line + '\n')
             except Exception:
                 pass
+        # Send to PC log server (non-blocking)
+        try:
+            self._tcp_log_queue.put_nowait(line)
+        except Exception:
+            pass
 
     def _drain_log_queue(self, dt):
         """Called every 250ms on main thread — drains thread-safe log queue."""
