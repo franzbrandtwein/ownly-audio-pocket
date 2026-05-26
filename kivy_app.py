@@ -2364,9 +2364,9 @@ class OwnlyApp(App):
                 # focus management would pause us whenever a browser video or notification
                 # requests focus, which is more disruptive than playing simultaneously.
                 try:
-                    AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
+                    AudioAttributesBuilder = autoclass('androidx.media3.common.AudioAttributes$Builder')
                     C = autoclass('androidx.media3.common.C')
-                    audio_attrs = AudioAttributes.Builder() \
+                    audio_attrs = AudioAttributesBuilder() \
                         .setUsage(C.USAGE_MEDIA) \
                         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
                         .build()
