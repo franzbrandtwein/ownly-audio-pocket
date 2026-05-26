@@ -377,7 +377,7 @@ class EmbeddedServer:
                 pass
         return tracks
 
-    def start(self, music_dir, on_status=None):
+    def start(self, music_dir, on_status=None, log_file=None):
         """Start server in a daemon thread. on_status(msg) will be called on the Kivy main thread."""
         if self.is_running:
             return
@@ -403,7 +403,28 @@ class EmbeddedServer:
 
                 def do_GET(self):
                     path = self.path.split('?')[0]
-                    if path.startswith('/audio/'):
+                    if path == '/log':
+                        try:
+                            with open(log_file, 'r', errors='replace') as _lf:
+                                body = _lf.read()
+                        except Exception as e:
+                            body = f'Log nicht verfügbar: {e}'
+                        # HTML wrapper for easy browser viewing with auto-refresh
+                        data = (
+                            '<html><head><meta charset="utf-8">'
+                            '<meta http-equiv="refresh" content="3">'
+                            '<style>body{font-family:monospace;font-size:12px;'
+                            'background:#111;color:#cfc;white-space:pre-wrap;padding:8px}'
+                            '</style></head><body>' +
+                            body.replace('&', '&amp;').replace('<', '&lt;') +
+                            '</body></html>'
+                        ).encode('utf-8')
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html; charset=utf-8')
+                        self.send_header('Content-Length', str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    elif path.startswith('/audio/'):
                         try:
                             idx = int(path[7:])
                             fp = tracks_ref[idx]['abs']
@@ -1519,6 +1540,16 @@ class OwnlyApp(App):
         self._log_lines       = []   # list of str, max 200
         self._log_queue       = queue.Queue()  # thread-safe log buffer
         self._pending_auto_next = False         # set from Java thread, checked by daemon thread
+
+        # Persistent debug log file — written directly (no Clock dependency, works when screen off)
+        self._log_file      = os.path.join(self.user_data_dir, 'debug.log')
+        self._log_file_lock = threading.Lock()
+        try:
+            with open(self._log_file, 'w') as _lf:
+                _lf.write(f'=== Ownly debug log {time.strftime("%Y-%m-%d %H:%M:%S")} ===\n')
+        except Exception:
+            self._log_file = None
+
         Clock.schedule_interval(self._drain_log_queue, 0.25)
         # Python daemon thread polls _pending_auto_next — keeps running when SDL is paused
         threading.Thread(target=self._auto_next_watcher, daemon=True).start()
@@ -2268,6 +2299,7 @@ class OwnlyApp(App):
         @run_on_ui_thread
         def _on_ui_thread():
             try:
+                self.log('exo: ui_thread start')
                 from jnius import autoclass  # type: ignore
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
@@ -2299,6 +2331,7 @@ class OwnlyApp(App):
                 player = ExoPlayerBuilder(PythonActivity.mActivity) \
                     .setMediaSourceFactory(msf) \
                     .build()
+                self.log('exo: player gebaut')
 
                 # Declare audio content type (music) but do NOT manage focus automatically.
                 # handleAudioFocus=False keeps music playing even when other apps open —
@@ -2312,8 +2345,8 @@ class OwnlyApp(App):
                         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
                         .build()
                     player.setAudioAttributes(audio_attrs, False)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    self.log(f'exo: AudioAttributes fehlgeschlagen: {_e}')
 
                 ExoListenerClass = _get_exo_listener_class()
                 self._mp_listener = ExoListenerClass(
@@ -2327,6 +2360,7 @@ class OwnlyApp(App):
                 player.setMediaItem(MediaItem.fromUri(media_url))
                 player.prepare()
                 player.play()
+                self.log('exo: prepare+play OK')
 
                 self._sound = player
                 self._exo_playing = True
@@ -2334,6 +2368,7 @@ class OwnlyApp(App):
                 # Back to Kivy thread for UI updates.
                 Clock.schedule_once(lambda _: self._on_exo_started(label))
             except Exception as e:
+                self.log(f'exo: FEHLER in ui_thread: {e}')
                 Clock.schedule_once(lambda _dt: self._on_play_error(str(e)))
 
         _on_ui_thread()
@@ -2436,11 +2471,17 @@ class OwnlyApp(App):
         even with the screen off.
         """
         import time as _time
+        _heartbeat = 0
         while True:
             _time.sleep(0.2)
+            _heartbeat += 1
+            if _heartbeat >= 150:   # every 30s
+                _heartbeat = 0
+                self.log('watcher: alive')
             if not self._pending_auto_next:
                 continue
             self._pending_auto_next = False
+            self.log('watcher: auto_next ausgelöst')
             if platform == 'android':
                 self._trigger_next_android_bg()
             else:
@@ -2630,9 +2671,19 @@ class OwnlyApp(App):
     # ── Debug log ─────────────────────────────────────────────────────────────
 
     def log(self, msg):
-        """Append a line to the debug log. Thread-safe via queue."""
+        """Append a line to the debug log. Thread-safe via queue + direct file write."""
         ts = time.strftime('%H:%M:%S')
-        self._log_queue.put(f'[{ts}] {msg}')
+        line = f'[{ts}] {msg}'
+        self._log_queue.put(line)
+        # Write directly to file — bypasses Clock so background events are captured
+        # even when the SDL thread is paused (screen off).
+        if getattr(self, '_log_file', None):
+            try:
+                with self._log_file_lock:
+                    with open(self._log_file, 'a') as _lf:
+                        _lf.write(line + '\n')
+            except Exception:
+                pass
 
     def _drain_log_queue(self, dt):
         """Called every 250ms on main thread — drains thread-safe log queue."""
@@ -2761,7 +2812,8 @@ class OwnlyApp(App):
                 else:
                     btn.text = 'Server starten'
                     btn.background_color = (.18, .55, .18, 1)
-        self._embedded_server.start(music_dir, on_status=_on_status)
+        self._embedded_server.start(music_dir, on_status=_on_status,
+                                    log_file=getattr(self, '_log_file', None))
 
     def connect_to_self(self):
         """Connect this client to the embedded server running on this device."""
