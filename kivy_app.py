@@ -69,9 +69,9 @@ class _LocalProxy(threading.Thread):
     """
 
     _CHUNK = 65536
-    _MAX_RETRIES = 6          # retry server connection on transient errors
-    _RETRY_DELAY = 2.0        # seconds between retries
     _CONNECT_TIMEOUT = 8      # urlopen timeout per attempt (seconds)
+    _RETRY_DELAY = 2.0        # seconds between retries
+    _TOTAL_TIMEOUT = 120      # total budget for all download attempts (seconds)
 
     def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None, on_debug=None):
         super().__init__(daemon=True)
@@ -129,15 +129,18 @@ class _LocalProxy(threading.Thread):
                 pass
 
     def _download_worker(self):
-        """Download full file to temp with retries.  Notifies _dl_cond on progress."""
+        """Download full file to temp with time-bounded retries.  Notifies _dl_cond on progress."""
         import time as _time
+        deadline = _time.monotonic() + self._TOTAL_TIMEOUT
+        attempt = 0
         last_err = None
-        for attempt in range(self._MAX_RETRIES):
-            if self._stopped:
-                return
+        while not self._stopped:
             if attempt:
                 _time.sleep(self._RETRY_DELAY)
-                self._dbg(f'proxy: retry {attempt}/{self._MAX_RETRIES - 1}')
+                if self._stopped or _time.monotonic() >= deadline:
+                    break
+                self._dbg(f'proxy: retry {attempt}')
+            attempt += 1
             try:
                 resp = urllib.request.urlopen(self.remote_url, timeout=self._CONNECT_TIMEOUT)
                 total = int(resp.headers.get('Content-Length', 0))
@@ -150,6 +153,7 @@ class _LocalProxy(threading.Thread):
                 with open(self._tmp_path, 'wb') as f:
                     with self._dl_cond:
                         self._dl_total = total
+                        self._dl_written = 0   # reset so _handle re-syncs on retry
                         self._dl_cond.notify_all()
                     while not self._stopped:
                         chunk = resp.read(self._CHUNK)
