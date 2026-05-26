@@ -73,13 +73,14 @@ class _LocalProxy(threading.Thread):
     _RETRY_DELAY = 2.0        # seconds between retries
     _TOTAL_TIMEOUT = 120      # total budget for all download attempts (seconds)
 
-    def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None, on_debug=None):
+    def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None, on_debug=None, on_done=None):
         super().__init__(daemon=True)
         self.remote_url  = remote_url
         self._cache_dest = cache_dest
         self._track_id   = track_id
         self._on_cached  = on_cached
         self._on_debug   = on_debug
+        self._on_done    = on_done
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind(('127.0.0.1', 0))
@@ -168,6 +169,11 @@ class _LocalProxy(threading.Thread):
                     self._dl_done = True
                     self._dl_cond.notify_all()
                 self._dbg(f'proxy: download fertig {written}B')
+                if self._on_done:
+                    try:
+                        self._on_done()
+                    except Exception:
+                        pass
                 last_err = None
                 break
             except Exception as e:
@@ -2507,6 +2513,44 @@ class OwnlyApp(App):
                 # Desktop: SDL is never paused, safe to use Clock
                 Clock.schedule_once(lambda _: self._auto_next())
 
+    def _start_server_keepalive(self, server_url):
+        """Ping server every 20s so WiFi stays awake between track downloads.
+
+        Called when the current track's proxy download finishes. Keeps running
+        until _trigger_next_android_bg() stops it at the start of the next track.
+        The result: when auto-next fires, WiFi is already up and the proxy
+        connects to the server in milliseconds instead of ~60 seconds.
+        """
+        import threading as _th
+        from urllib.parse import urlparse as _up
+        # Stop any previous keepalive
+        self._stop_server_keepalive()
+        try:
+            p = _up(server_url)
+            ping_url = f'{p.scheme}://{p.netloc}/audio/0'
+        except Exception:
+            return
+        stop = _th.Event()
+        self._keepalive_stop = stop
+        def _run():
+            import urllib.request as _ur
+            self.log('keepalive: start')
+            while not stop.wait(20):
+                try:
+                    req = _ur.Request(ping_url)
+                    req.get_method = lambda: 'HEAD'
+                    _ur.urlopen(req, timeout=4)
+                except Exception:
+                    pass
+            self.log('keepalive: stop')
+        _th.Thread(target=_run, daemon=True).start()
+
+    def _stop_server_keepalive(self):
+        ev = getattr(self, '_keepalive_stop', None)
+        if ev:
+            ev.set()
+        self._keepalive_stop = None
+
     def _trigger_next_android_bg(self):
         """Start the next track from a background thread (safe when SDL is paused).
 
@@ -2514,6 +2558,8 @@ class OwnlyApp(App):
         Clock.schedule_once and fire when the user brings the app back to
         foreground. Audio playback starts immediately via @run_on_ui_thread.
         """
+        # Stop WiFi keepalive from previous track — new proxy will take over
+        self._stop_server_keepalive()
         # Acquire WiFi lock early so the radio is awake before the proxy needs it
         self._acquire_wifi_lock()
 
@@ -2567,7 +2613,8 @@ class OwnlyApp(App):
                                 cache_dest=cache_dest,
                                 track_id=tid,
                                 on_cached=self._on_track_cached_by_proxy,
-                                on_debug=self.log)
+                                on_debug=self.log,
+                                on_done=lambda u=exo_url: self._start_server_keepalive(u))
             self._proxy = proxy
             proxy.start()
             self.log(f'proxy:{proxy.port} → {exo_url[-35:]}')
