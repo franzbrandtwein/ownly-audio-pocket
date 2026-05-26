@@ -461,8 +461,11 @@ class EmbeddedServer:
                                     self.wfile.write(chunk)
                                     remaining -= len(chunk)
                         except Exception:
-                            self.send_response(404)
-                            self.end_headers()
+                            try:
+                                self.send_response(404)
+                                self.end_headers()
+                            except Exception:
+                                pass
                     else:
                         self.send_response(404)
                         self.end_headers()
@@ -512,6 +515,14 @@ class EmbeddedServer:
             class _ReuseServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
                 allow_reuse_address = True
                 daemon_threads = True
+
+                def handle_error(self, request, client_address):
+                    # Suppress expected client-disconnect errors (BrokenPipe, ConnectionReset)
+                    import sys
+                    exc = sys.exc_info()[1]
+                    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                        return
+                    super().handle_error(request, client_address)
 
             try:
                 self._httpd = _ReuseServer(('0.0.0.0', soap_port), _Handler)
