@@ -1561,6 +1561,9 @@ class OwnlyApp(App):
         except Exception:
             self._log_file = None
 
+        # Always-on log server on port 8769 — no need to start the music server
+        threading.Thread(target=self._run_log_server, daemon=True).start()
+
         Clock.schedule_interval(self._drain_log_queue, 0.25)
         # Python daemon thread polls _pending_auto_next — keeps running when SDL is paused
         threading.Thread(target=self._auto_next_watcher, daemon=True).start()
@@ -2680,6 +2683,51 @@ class OwnlyApp(App):
     # ── QR scan ──────────────────────────────────────────────────────────────
 
     # ── Debug log ─────────────────────────────────────────────────────────────
+
+    def _run_log_server(self):
+        """Minimal HTTP server on port 8769 — always on, serves /log.
+        Open http://<phone-ip>:8769/ in any browser to watch the live log.
+        No need to start the music server."""
+        import http.server as _hs
+        import socketserver as _ss
+        log_file = self._log_file
+
+        class _LogHandler(_hs.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                try:
+                    with open(log_file, 'r', errors='replace') as _lf:
+                        body = _lf.read()
+                except Exception as e:
+                    body = f'Log nicht verfügbar: {e}'
+                data = (
+                    '<html><head><meta charset="utf-8">'
+                    '<meta http-equiv="refresh" content="3">'
+                    '<style>body{font-family:monospace;font-size:12px;'
+                    'background:#111;color:#cfc;white-space:pre-wrap;padding:8px}'
+                    '</style></head><body>' +
+                    body.replace('&', '&amp;').replace('<', '&lt;') +
+                    '</body></html>'
+                ).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        class _S(_ss.ThreadingMixIn, _hs.HTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+            def handle_error(self, *a):
+                pass
+
+        try:
+            srv = _S(('0.0.0.0', 8769), _LogHandler)
+            srv.serve_forever()
+        except Exception:
+            pass
 
     def log(self, msg):
         """Append a line to the debug log. Thread-safe via queue + direct file write."""
