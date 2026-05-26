@@ -69,8 +69,9 @@ class _LocalProxy(threading.Thread):
     """
 
     _CHUNK = 65536
-    _MAX_RETRIES = 4          # retry server connection on transient errors
+    _MAX_RETRIES = 6          # retry server connection on transient errors
     _RETRY_DELAY = 2.0        # seconds between retries
+    _CONNECT_TIMEOUT = 8      # urlopen timeout per attempt (seconds)
 
     def __init__(self, remote_url, cache_dest=None, track_id=None, on_cached=None, on_debug=None):
         super().__init__(daemon=True)
@@ -138,7 +139,7 @@ class _LocalProxy(threading.Thread):
                 _time.sleep(self._RETRY_DELAY)
                 self._dbg(f'proxy: retry {attempt}/{self._MAX_RETRIES - 1}')
             try:
-                resp = urllib.request.urlopen(self.remote_url, timeout=60)
+                resp = urllib.request.urlopen(self.remote_url, timeout=self._CONNECT_TIMEOUT)
                 total = int(resp.headers.get('Content-Length', 0))
                 self._dbg(f'proxy: server OK {total}B')
                 if self._cache_dest:
@@ -219,7 +220,7 @@ class _LocalProxy(threading.Thread):
             with self._dl_cond:
                 while self._dl_total == 0 and not self._dl_done and \
                       self._dl_error is None and not self._stopped:
-                    self._dl_cond.wait(timeout=30.0)
+                    self._dl_cond.wait(timeout=10.0)
                 if self._dl_error or self._stopped:
                     return
                 total = self._dl_total
