@@ -286,6 +286,7 @@ class _LocalProxy(threading.Thread):
 
 
 # Android ExoPlayer listener — defined once (jnius singleton pattern).
+# Reset to None here so a fresh build always redefines the class.
 _ExoListenerClass = None
 
 def _get_exo_listener_class():
@@ -312,6 +313,20 @@ def _get_exo_listener_class():
                     self._on_state(f'exo state: {name}')
                 if state == 4:   # Player.STATE_ENDED
                     self._on_ended()
+
+            @java_method('(Z)V')
+            def onIsPlayingChanged(self, is_playing):
+                if self._on_state:
+                    self._on_state(f'exo: isPlaying={is_playing}')
+
+            @java_method('(ZI)V')
+            def onPlayWhenReadyChanged(self, play_when_ready, reason):
+                # reason: 1=USER, 2=AUDIO_FOCUS_LOSS, 3=BECOMING_NOISY, 4=REMOTE, 5=END_OF_MEDIA
+                _reasons = {1: 'USER', 2: 'AUDIO_FOCUS_LOSS', 3: 'BECOMING_NOISY',
+                            4: 'REMOTE', 5: 'END_OF_MEDIA'}
+                r = _reasons.get(reason, str(reason))
+                if self._on_state:
+                    self._on_state(f'exo: playWhenReady={play_when_ready} reason={r}')
 
             @java_method('(Landroidx/media3/common/PlaybackException;)V')
             def onPlayerError(self, error):
