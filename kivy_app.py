@@ -2423,6 +2423,13 @@ class OwnlyApp(App):
                     .build()
                 # PARTIAL_WAKE_LOCK + WifiLock: keep CPU/WiFi alive with screen off
                 player.setWakeMode(C.WAKE_MODE_NETWORK)
+                # Disable becoming-noisy pause: don't stop when audio routing changes
+                # (headphones disconnected, BT, etc.) — default is True which pauses.
+                try:
+                    player.setHandleAudioBecomingNoisy(False)
+                    self.log('exo: BecomingNoisy deaktiviert')
+                except Exception as _e:
+                    self.log(f'exo: BecomingNoisy warn: {_e}')
                 self.log('exo: player gebaut')
 
                 # handleAudioFocus=False: keep playing when other apps take audio focus.
@@ -2575,6 +2582,16 @@ class OwnlyApp(App):
             if _heartbeat >= 150:   # every 30s
                 _heartbeat = 0
                 self.log('watcher: alive')
+                # Poll ExoPlayer state so we see pauses even if callbacks are missed.
+                try:
+                    _p = self._sound
+                    if _p is not None and self._exo_playing:
+                        _ip = bool(_p.isPlaying())
+                        _pwr = bool(_p.getPlayWhenReady())
+                        if not _ip:
+                            self.log(f'watcher: PLAYER STUMM isPlaying={_ip} playWhenReady={_pwr}')
+                except Exception:
+                    pass
             if not self._pending_auto_next:
                 continue
             self._pending_auto_next = False
