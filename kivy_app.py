@@ -1544,7 +1544,8 @@ class OwnlyApp(App):
         self._server_host    = ''
         self._soap_port      = 8767
         self._tmp_file       = None
-        self._dl_wake_lock   = None   # PARTIAL_WAKE_LOCK held during background downloads
+        self._dl_wake_lock       = None   # PARTIAL_WAKE_LOCK held during background downloads
+        self._playback_wake_lock = None   # PARTIAL_WAKE_LOCK held while a track is playing
         self._proxy          = None   # _LocalProxy instance for current stream
         self._wifi_lock      = None   # WiFi lock — keeps radio on during streaming
         self._cached_ids          = set()
@@ -1572,9 +1573,10 @@ class OwnlyApp(App):
         except Exception:
             self._log_file = None
 
-        # TCP log sender — streams every log line to log_server.py on the PC
-        self._tcp_log_queue = queue.Queue()
-        threading.Thread(target=self._run_tcp_log_sender, daemon=True).start()
+        # UDP log sender — fires every log line to log_server.py on the PC.
+        # UDP is stateless: no connection to lose when app goes to background.
+        self._log_send_queue = queue.Queue()
+        threading.Thread(target=self._run_udp_log_sender, daemon=True).start()
 
         Clock.schedule_interval(self._drain_log_queue, 0.25)
         # Python daemon thread polls _pending_auto_next — keeps running when SDL is paused
@@ -2174,9 +2176,12 @@ class OwnlyApp(App):
             _do_start()
         except Exception as e:
             self.log(f'audio_service: setup FEHLER: {e}')
+        # Hold CPU awake for playback — ExoPlayer's setWakeMode may not work via pyjnius
+        self._acquire_playback_wake_lock()
 
     def _stop_audio_service(self):
         """Stop the Java foreground service."""
+        self._release_playback_wake_lock()
         if platform != 'android':
             return
         try:
@@ -2284,6 +2289,33 @@ class OwnlyApp(App):
                     PowerManager.PARTIAL_WAKE_LOCK, 'OwnlyAudioPocket::Download')
             if not self._dl_wake_lock.isHeld():
                 self._dl_wake_lock.acquire()
+        except Exception:
+            pass
+
+    def _acquire_playback_wake_lock(self):
+        """Acquire PARTIAL_WAKE_LOCK so the CPU stays awake during background playback."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass as _ac  # type: ignore
+            PowerManager  = _ac('android.os.PowerManager')
+            PythonActivity = _ac('org.kivy.android.PythonActivity')
+            pm = PythonActivity.mActivity.getSystemService(
+                PythonActivity.mActivity.POWER_SERVICE)
+            if self._playback_wake_lock is None:
+                self._playback_wake_lock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK, 'OwnlyAudioPocket::Playback')
+            if not self._playback_wake_lock.isHeld():
+                self._playback_wake_lock.acquire()
+            self.log('wakelock: playback gehalten')
+        except Exception as e:
+            self.log(f'wakelock: playback FEHLER: {e}')
+
+    def _release_playback_wake_lock(self):
+        try:
+            if self._playback_wake_lock and self._playback_wake_lock.isHeld():
+                self._playback_wake_lock.release()
+                self.log('wakelock: playback freigegeben')
         except Exception:
             pass
 
@@ -2759,70 +2791,42 @@ class OwnlyApp(App):
 
     # ── Debug log ─────────────────────────────────────────────────────────────
 
-    def _run_tcp_log_sender(self):
-        """Send every log line to log_server.py on the PC via TCP.
+    def _run_udp_log_sender(self):
+        """Send every log line to log_server.py on the PC via UDP.
 
-        Connects to _server_host:9999. Waits until a server address is known,
-        then keeps a persistent connection. Reconnects automatically on failure.
-        Any lines queued while disconnected are held and sent after reconnect.
+        UDP is stateless — no connection to maintain, no TCP handshake to lose
+        when the app goes to background. Each log line is an independent datagram.
         """
         import socket as _s
         import time as _t
         _PORT = 9999
         sock = None
-        pending = []
 
         while True:
-            # Drain pending + new lines into pending list
-            while True:
-                try:
-                    pending.append(self._tcp_log_queue.get_nowait())
-                except Exception:
-                    break
+            try:
+                line = self._log_send_queue.get(timeout=30)
+            except Exception:
+                continue
 
             host = getattr(self, '_server_host', '')
             if not host:
-                _t.sleep(2)
                 continue
 
             if sock is None:
                 try:
-                    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
-                    sock.settimeout(5)
-                    sock.connect((host, _PORT))
-                    sock.settimeout(None)
+                    sock = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
                 except Exception:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                    sock = None
-                    _t.sleep(5)
+                    _t.sleep(2)
                     continue
 
-            # Send all pending lines
-            failed = False
-            for line in pending:
-                try:
-                    sock.sendall((line + '\n').encode('utf-8'))
-                except Exception:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                    sock = None
-                    failed = True
-                    break
-            if failed:
-                continue
-            pending.clear()
-
-            # Wait for next line (with timeout so we loop and check host changes)
             try:
-                line = self._tcp_log_queue.get(timeout=10)
-                pending.append(line)
+                sock.sendto((line + '\n').encode('utf-8', errors='replace'), (host, _PORT))
             except Exception:
-                pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                sock = None
 
     def log(self, msg):
         """Append a line to the debug log. Thread-safe via queue + direct file write + TCP."""
@@ -2840,7 +2844,7 @@ class OwnlyApp(App):
                 pass
         # Send to PC log server (non-blocking)
         try:
-            self._tcp_log_queue.put_nowait(line)
+            self._log_send_queue.put_nowait(line)
         except Exception:
             pass
 
