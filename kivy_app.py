@@ -2148,18 +2148,28 @@ class OwnlyApp(App):
             return
         try:
             from jnius import autoclass
+            from android.runnable import run_on_ui_thread  # type: ignore
             PythonActivity       = autoclass('org.kivy.android.PythonActivity')
             Intent               = autoclass('android.content.Intent')
             Build                = autoclass('android.os.Build')
             ForegroundAudioSvc   = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
             intent = Intent(PythonActivity.mActivity, ForegroundAudioSvc)
             intent.putExtra('track', track_label)
-            if Build.VERSION.SDK_INT >= 26:
-                PythonActivity.mActivity.startForegroundService(intent)
-            else:
-                PythonActivity.mActivity.startService(intent)
-        except Exception:
-            pass
+
+            @run_on_ui_thread
+            def _do_start():
+                try:
+                    if Build.VERSION.SDK_INT >= 26:
+                        PythonActivity.mActivity.startForegroundService(intent)
+                    else:
+                        PythonActivity.mActivity.startService(intent)
+                    self.log('audio_service: gestartet')
+                except Exception as e:
+                    self.log(f'audio_service: startForegroundService FEHLER: {e}')
+
+            _do_start()
+        except Exception as e:
+            self.log(f'audio_service: setup FEHLER: {e}')
 
     def _stop_audio_service(self):
         """Stop the Java foreground service."""
