@@ -2644,11 +2644,17 @@ class OwnlyApp(App):
                         def _poll():
                             try:
                                 _p = self._sound
-                                if _p is not None and self._exo_playing:
+                                _ep = self._exo_playing
+                                if _p is not None:
                                     _ip = bool(_p.isPlaying())
                                     _pwr = bool(_p.getPlayWhenReady())
-                                    if not _ip:
-                                        self.log(f'watcher: PLAYER STUMM isPlaying={_ip} playWhenReady={_pwr}')
+                                    self.log(f'watcher: poll exo_playing={_ep} isPlaying={_ip} pwr={_pwr}')
+                                    # Auto-resume if paused unexpectedly
+                                    if _ep and not _ip and _pwr:
+                                        _p.play()
+                                        self.log('watcher: auto-resume play()')
+                                else:
+                                    self.log(f'watcher: poll _sound=None exo_playing={_ep}')
                             except Exception as _e:
                                 self.log(f'watcher: state poll err: {_e}')
                         _handler.post(ExoRunnableClass(_poll))
