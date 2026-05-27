@@ -1580,6 +1580,9 @@ class OwnlyApp(App):
         # Python daemon thread polls _pending_auto_next — keeps running when SDL is paused
         threading.Thread(target=self._auto_next_watcher, daemon=True).start()
 
+        if platform == 'android':
+            self._register_screen_receiver()
+
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
         self._load_settings()          # must run before _load_cached_ids
@@ -1880,6 +1883,7 @@ class OwnlyApp(App):
 
     def toggle_offline_filter(self):
         self._offline_only = not self._offline_only
+        self.log(f'user: offline-filter {"AN" if self._offline_only else "AUS"}')
         self._root.ids.offline_btn.color = (
             (.3, .9, .3, 1) if self._offline_only else (.45, .45, .45, 1)
         )
@@ -2187,6 +2191,8 @@ class OwnlyApp(App):
 
     def play_idx(self, server_idx):
         """Start playing the track identified by server-side idx."""
+        track = next((t for t in self._all_tracks if t['idx'] == server_idx), None)
+        self.log(f'user: play_idx {server_idx} ({track["title"][:25] if track else "?"})')
         self._active_srv_idx = server_idx
         self._apply_active_marker()
 
@@ -2713,6 +2719,7 @@ class OwnlyApp(App):
         _on_ui()
 
     def toggle_play(self):
+        self.log('user: play/pause')
         if not self._sound:
             return
         if platform == 'android':
@@ -2729,9 +2736,11 @@ class OwnlyApp(App):
             self._root.ids.play_btn.text = '||'
 
     def next_track(self):
+        self.log('user: weiter')
         self._auto_next()
 
     def prev_track(self):
+        self.log('user: zurück')
         if not self._filtered:
             return
         cur_pos = next(
@@ -2742,6 +2751,7 @@ class OwnlyApp(App):
 
     def toggle_shuffle(self):
         self._shuffle = not self._shuffle
+        self.log(f'user: shuffle {"AN" if self._shuffle else "AUS"}')
         btn = self._root.ids.shuffle_btn
         btn.background_color = (.93, .4, .2, 1) if self._shuffle else (.18, .18, .18, 1)
 
@@ -3039,6 +3049,29 @@ class OwnlyApp(App):
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
+    def _register_screen_receiver(self):
+        """Register a BroadcastReceiver for screen on/off events (Android only)."""
+        try:
+            from android.broadcast import BroadcastReceiver  # type: ignore
+            self._screen_receiver = BroadcastReceiver(
+                self._on_screen_event,
+                actions=[
+                    'android.intent.action.SCREEN_OFF',
+                    'android.intent.action.SCREEN_ON',
+                ]
+            )
+            self._screen_receiver.start()
+            self.log('system: screen-receiver registriert')
+        except Exception as e:
+            self.log(f'system: screen-receiver FEHLER: {e}')
+
+    def _on_screen_event(self, context, intent):
+        action = intent.getAction()
+        if action == 'android.intent.action.SCREEN_OFF':
+            self.log('system: display AUS')
+        elif action == 'android.intent.action.SCREEN_ON':
+            self.log('system: display AN')
+
     def _apply_active_marker(self):
         for t in self._filtered:
             t['is_active'] = (t['idx'] == self._active_srv_idx)
@@ -3047,12 +3080,14 @@ class OwnlyApp(App):
 
     def on_pause(self):
         """Android back/home button: keep running so audio continues in background."""
+        self.log('lifecycle: app → hintergrund')
         return True
 
     def on_resume(self):
-        pass
+        self.log('lifecycle: app → vordergrund')
 
     def on_stop(self):
+        self.log('lifecycle: on_stop (app wird beendet)')
         self._release_wifi_lock()
         self._stop_audio_service()
         if self._proxy:
