@@ -289,6 +289,32 @@ class _LocalProxy(threading.Thread):
 # Reset to None here so a fresh build always redefines the class.
 _ExoListenerClass = None
 
+# Java Runnable wrapper — for posting Python callables to a HandlerThread.
+_ExoRunnableClass = None
+
+def _get_exo_runnable_class():
+    global _ExoRunnableClass
+    if _ExoRunnableClass is None:
+        from jnius import PythonJavaClass, java_method  # type: ignore
+
+        class _ExoRunnable(PythonJavaClass):
+            __javainterfaces__ = ['java/lang/Runnable']
+            __javacontext__ = 'app'
+
+            def __init__(self, fn):
+                super().__init__()
+                self._fn = fn
+
+            @java_method('()V')
+            def run(self):
+                try:
+                    self._fn()
+                except Exception:
+                    pass
+
+        _ExoRunnableClass = _ExoRunnable
+    return _ExoRunnableClass
+
 def _get_exo_listener_class():
     global _ExoListenerClass
     if _ExoListenerClass is None:
@@ -1561,6 +1587,7 @@ class OwnlyApp(App):
         self._tmp_file       = None
         self._dl_wake_lock       = None   # PARTIAL_WAKE_LOCK held during background downloads
         self._playback_wake_lock = None   # PARTIAL_WAKE_LOCK held while a track is playing
+        self._exo_handler        = None   # Handler on ExoPlayerThread — ExoPlayer runs here
         self._proxy          = None   # _LocalProxy instance for current stream
         self._wifi_lock      = None   # WiFi lock — keeps radio on during streaming
         self._cached_ids          = set()
@@ -2374,8 +2401,12 @@ class OwnlyApp(App):
             self._release_dl_wake_lock()
 
     def _setup_exoplayer(self, url, label):
-        """Schedules ExoPlayer creation on the Android UI thread (required by media3).
-        Safe to call from any thread — no Kivy UI access here."""
+        """Builds ExoPlayer on a dedicated HandlerThread, independent of SDL2/Kivy main thread.
+
+        SDL2 may block the Android main Looper when the activity is paused.
+        Running ExoPlayer on its own HandlerThread ensures callbacks (onIsPlayingChanged etc.)
+        always fire and ExoPlayer keeps playing regardless of Kivy/SDL2 state.
+        """
         self.log(f'setup_exo: {url[-50:]}')
         self._acquire_wifi_lock()
 
@@ -2388,12 +2419,21 @@ class OwnlyApp(App):
         @run_on_ui_thread
         def _on_ui_thread():
             try:
-                self.log('exo: ui_thread start')
                 from jnius import autoclass  # type: ignore
+
+                # Create a dedicated HandlerThread for ExoPlayer once — survives between tracks.
+                if self._exo_handler is None:
+                    HandlerThread = autoclass('android.os.HandlerThread')
+                    Handler = autoclass('android.os.Handler')
+                    ht = HandlerThread('ExoPlayerThread')
+                    ht.start()
+                    self._exo_handler = Handler(ht.getLooper())
+                    self.log('exo: HandlerThread gestartet')
+
+                ht_looper = self._exo_handler.getLooper()
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
-                MediaItem = autoclass('androidx.media3.common.MediaItem')
-                C = autoclass('androidx.media3.common.C')
+                activity = PythonActivity.mActivity
+
                 DefaultHttpDataSourceFactory = autoclass(
                     'androidx.media3.datasource.DefaultHttpDataSource$Factory')
                 DefaultDataSourceFactory = autoclass(
@@ -2401,76 +2441,90 @@ class OwnlyApp(App):
                 ProgressiveMediaSourceFactory = autoclass(
                     'androidx.media3.exoplayer.source.ProgressiveMediaSource$Factory')
 
-                # 30s HTTP timeout; wrap in DefaultDataSource so file:// also works
+                # 30s HTTP timeout; wrap in DefaultDataSource so file:// also works.
                 http_dsf = DefaultHttpDataSourceFactory()
                 http_dsf.setConnectTimeoutMs(30000)
                 http_dsf.setReadTimeoutMs(30000)
-                dsf = DefaultDataSourceFactory(PythonActivity.mActivity, http_dsf)
+                dsf = DefaultDataSourceFactory(activity, http_dsf)
                 msf = ProgressiveMediaSourceFactory(dsf)
 
-                # Release old player (must be on UI thread too).
-                for old in (self._old_sound, self._sound):
-                    if old is not None:
-                        try:
-                            old.release()
-                        except Exception:
-                            pass
-                self._old_sound = None
-                self._sound = None
-
-                player = ExoPlayerBuilder(PythonActivity.mActivity) \
-                    .setMediaSourceFactory(msf) \
-                    .build()
-                # PARTIAL_WAKE_LOCK + WifiLock: keep CPU/WiFi alive with screen off
-                player.setWakeMode(C.WAKE_MODE_NETWORK)
-                # Disable becoming-noisy pause: don't stop when audio routing changes
-                # (headphones disconnected, BT, etc.) — default is True which pauses.
-                try:
-                    player.setHandleAudioBecomingNoisy(False)
-                    self.log('exo: BecomingNoisy deaktiviert')
-                except Exception as _e:
-                    self.log(f'exo: BecomingNoisy warn: {_e}')
-                self.log('exo: player gebaut')
-
-                # handleAudioFocus=False: keep playing when other apps take audio focus.
-                # CRITICAL: if this fails, ExoPlayer defaults to handleAudioFocus=true
-                # and will pause itself whenever another app opens — that's bug 2.
-                try:
-                    AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
-                    try:
-                        AudioAttributesBuilder = autoclass('androidx.media3.common.AudioAttributes$Builder')
-                        audio_attrs = AudioAttributesBuilder() \
-                            .setUsage(C.USAGE_MEDIA) \
-                            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
-                            .build()
-                    except Exception:
-                        # Builder inner class unavailable in this pyjnius version —
-                        # fall back to DEFAULT (USAGE_UNKNOWN but still valid object)
-                        audio_attrs = AudioAttributes.DEFAULT
-                    player.setAudioAttributes(audio_attrs, False)
-                    self.log('exo: AudioAttributes gesetzt (handleAudioFocus=False)')
-                except Exception as _e:
-                    self.log(f'exo: AudioAttributes fehlgeschlagen: {_e}')
-
-                ExoListenerClass = _get_exo_listener_class()
-                self._mp_listener = ExoListenerClass(
-                    lambda: setattr(self, '_pending_auto_next', True),
-                    lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
-                    lambda s: self.log(s),
-                )
-                player.addListener(self._mp_listener)
-
                 media_url = f'file://{url}' if url.startswith('/') else url
-                player.setMediaItem(MediaItem.fromUri(media_url))
-                player.prepare()
-                player.play()
-                self.log('exo: prepare+play OK')
+                ExoRunnableClass = _get_exo_runnable_class()
 
-                self._sound = player
-                self._exo_playing = True
+                def _build_and_play():
+                    """Runs on ExoPlayerThread — ALL ExoPlayer calls must happen here."""
+                    try:
+                        self.log('exo: ui_thread start')
+                        ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
+                        MediaItem = autoclass('androidx.media3.common.MediaItem')
+                        C = autoclass('androidx.media3.common.C')
 
-                # Back to Kivy thread for UI updates.
-                Clock.schedule_once(lambda _: self._on_exo_started(label))
+                        # Release old players on the ExoPlayer thread (correct looper).
+                        for old in (self._old_sound, self._sound):
+                            if old is not None:
+                                try:
+                                    old.release()
+                                except Exception:
+                                    pass
+                        self._old_sound = None
+                        self._sound = None
+
+                        player = ExoPlayerBuilder(activity) \
+                            .setLooper(ht_looper) \
+                            .setMediaSourceFactory(msf) \
+                            .build()
+
+                        # PARTIAL_WAKE_LOCK + WifiLock: keep CPU/WiFi alive with screen off.
+                        player.setWakeMode(C.WAKE_MODE_NETWORK)
+                        # Disable becoming-noisy pause: don't stop when audio routing changes.
+                        try:
+                            player.setHandleAudioBecomingNoisy(False)
+                            self.log('exo: BecomingNoisy deaktiviert')
+                        except Exception as _e:
+                            self.log(f'exo: BecomingNoisy warn: {_e}')
+                        self.log('exo: player gebaut')
+
+                        # handleAudioFocus=False: keep playing when other apps take audio focus.
+                        try:
+                            AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
+                            try:
+                                AudioAttributesBuilder = autoclass(
+                                    'androidx.media3.common.AudioAttributes$Builder')
+                                audio_attrs = AudioAttributesBuilder() \
+                                    .setUsage(C.USAGE_MEDIA) \
+                                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
+                                    .build()
+                            except Exception:
+                                # Builder inner class unavailable — fall back to DEFAULT.
+                                audio_attrs = AudioAttributes.DEFAULT
+                            player.setAudioAttributes(audio_attrs, False)
+                            self.log('exo: AudioAttributes gesetzt (handleAudioFocus=False)')
+                        except Exception as _e:
+                            self.log(f'exo: AudioAttributes fehlgeschlagen: {_e}')
+
+                        ExoListenerClass = _get_exo_listener_class()
+                        self._mp_listener = ExoListenerClass(
+                            lambda: setattr(self, '_pending_auto_next', True),
+                            lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
+                            lambda s: self.log(s),
+                        )
+                        player.addListener(self._mp_listener)
+
+                        player.setMediaItem(MediaItem.fromUri(media_url))
+                        player.prepare()
+                        player.play()
+                        self.log('exo: prepare+play OK')
+
+                        self._sound = player
+                        self._exo_playing = True
+
+                        # Back to Kivy thread for UI updates.
+                        Clock.schedule_once(lambda _: self._on_exo_started(label))
+                    except Exception as e:
+                        self.log(f'exo: FEHLER in HandlerThread: {e}')
+                        Clock.schedule_once(lambda _dt: self._on_play_error(str(e)))
+
+                self._exo_handler.post(ExoRunnableClass(_build_and_play))
             except Exception as e:
                 self.log(f'exo: FEHLER in ui_thread: {e}')
                 Clock.schedule_once(lambda _dt: self._on_play_error(str(e)))
@@ -2582,14 +2636,22 @@ class OwnlyApp(App):
             if _heartbeat >= 150:   # every 30s
                 _heartbeat = 0
                 self.log('watcher: alive')
-                # Poll ExoPlayer state so we see pauses even if callbacks are missed.
+                # Poll ExoPlayer state via its HandlerThread (thread-safe).
                 try:
-                    _p = self._sound
-                    if _p is not None and self._exo_playing:
-                        _ip = bool(_p.isPlaying())
-                        _pwr = bool(_p.getPlayWhenReady())
-                        if not _ip:
-                            self.log(f'watcher: PLAYER STUMM isPlaying={_ip} playWhenReady={_pwr}')
+                    _handler = self._exo_handler
+                    if _handler is not None and self._exo_playing:
+                        ExoRunnableClass = _get_exo_runnable_class()
+                        def _poll():
+                            try:
+                                _p = self._sound
+                                if _p is not None and self._exo_playing:
+                                    _ip = bool(_p.isPlaying())
+                                    _pwr = bool(_p.getPlayWhenReady())
+                                    if not _ip:
+                                        self.log(f'watcher: PLAYER STUMM isPlaying={_ip} playWhenReady={_pwr}')
+                            except Exception as _e:
+                                self.log(f'watcher: state poll err: {_e}')
+                        _handler.post(ExoRunnableClass(_poll))
                 except Exception:
                     pass
             if not self._pending_auto_next:
@@ -3137,16 +3199,27 @@ class OwnlyApp(App):
             self._proxy = None
         if self._sound and platform == 'android':
             _player = self._sound
+            _handler = self._exo_handler
             try:
-                from android.runnable import run_on_ui_thread  # type: ignore
-                @run_on_ui_thread
-                def _release():
-                    try:
-                        _player.stop()
-                        _player.release()
-                    except Exception:
-                        pass
-                _release()
+                if _handler is not None:
+                    ExoRunnableClass = _get_exo_runnable_class()
+                    def _release():
+                        try:
+                            _player.stop()
+                            _player.release()
+                        except Exception:
+                            pass
+                    _handler.post(ExoRunnableClass(_release))
+                else:
+                    from android.runnable import run_on_ui_thread  # type: ignore
+                    @run_on_ui_thread
+                    def _release_ui():
+                        try:
+                            _player.stop()
+                            _player.release()
+                        except Exception:
+                            pass
+                    _release_ui()
             except Exception:
                 pass
         elif self._sound:
