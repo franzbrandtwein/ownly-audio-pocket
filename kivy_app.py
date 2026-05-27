@@ -2155,7 +2155,7 @@ class OwnlyApp(App):
             from android.runnable import run_on_ui_thread  # type: ignore
             PythonActivity       = autoclass('org.kivy.android.PythonActivity')
             Intent               = autoclass('android.content.Intent')
-            Build                = autoclass('android.os.Build')
+            Build                = autoclass('android.os.Build$VERSION')
             ForegroundAudioSvc   = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
             intent = Intent(PythonActivity.mActivity, ForegroundAudioSvc)
             intent.putExtra('track', track_label)
@@ -2163,7 +2163,7 @@ class OwnlyApp(App):
             @run_on_ui_thread
             def _do_start():
                 try:
-                    if Build.VERSION.SDK_INT >= 26:
+                    if Build.SDK_INT >= 26:
                         PythonActivity.mActivity.startForegroundService(intent)
                     else:
                         PythonActivity.mActivity.startService(intent)
