@@ -2330,6 +2330,7 @@ class OwnlyApp(App):
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
                 MediaItem = autoclass('androidx.media3.common.MediaItem')
+                C = autoclass('androidx.media3.common.C')
                 DefaultHttpDataSourceFactory = autoclass(
                     'androidx.media3.datasource.DefaultHttpDataSource$Factory')
                 DefaultDataSourceFactory = autoclass(
@@ -2357,6 +2358,8 @@ class OwnlyApp(App):
                 player = ExoPlayerBuilder(PythonActivity.mActivity) \
                     .setMediaSourceFactory(msf) \
                     .build()
+                # PARTIAL_WAKE_LOCK + WifiLock: keep CPU/WiFi alive with screen off
+                player.setWakeMode(C.WAKE_MODE_NETWORK)
                 self.log('exo: player gebaut')
 
                 # Declare audio content type (music) but do NOT manage focus automatically.
@@ -2365,7 +2368,6 @@ class OwnlyApp(App):
                 # requests focus, which is more disruptive than playing simultaneously.
                 try:
                     AudioAttributesBuilder = autoclass('androidx.media3.common.AudioAttributes$Builder')
-                    C = autoclass('androidx.media3.common.C')
                     audio_attrs = AudioAttributesBuilder() \
                         .setUsage(C.USAGE_MEDIA) \
                         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
