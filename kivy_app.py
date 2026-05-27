@@ -2410,17 +2410,23 @@ class OwnlyApp(App):
                 player.setWakeMode(C.WAKE_MODE_NETWORK)
                 self.log('exo: player gebaut')
 
-                # Declare audio content type (music) but do NOT manage focus automatically.
-                # handleAudioFocus=False keeps music playing even when other apps open —
-                # focus management would pause us whenever a browser video or notification
-                # requests focus, which is more disruptive than playing simultaneously.
+                # handleAudioFocus=False: keep playing when other apps take audio focus.
+                # CRITICAL: if this fails, ExoPlayer defaults to handleAudioFocus=true
+                # and will pause itself whenever another app opens — that's bug 2.
                 try:
-                    AudioAttributesBuilder = autoclass('androidx.media3.common.AudioAttributes$Builder')
-                    audio_attrs = AudioAttributesBuilder() \
-                        .setUsage(C.USAGE_MEDIA) \
-                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
-                        .build()
+                    AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
+                    try:
+                        AudioAttributesBuilder = autoclass('androidx.media3.common.AudioAttributes$Builder')
+                        audio_attrs = AudioAttributesBuilder() \
+                            .setUsage(C.USAGE_MEDIA) \
+                            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
+                            .build()
+                    except Exception:
+                        # Builder inner class unavailable in this pyjnius version —
+                        # fall back to DEFAULT (USAGE_UNKNOWN but still valid object)
+                        audio_attrs = AudioAttributes.DEFAULT
                     player.setAudioAttributes(audio_attrs, False)
+                    self.log('exo: AudioAttributes gesetzt (handleAudioFocus=False)')
                 except Exception as _e:
                     self.log(f'exo: AudioAttributes fehlgeschlagen: {_e}')
 
