@@ -2410,13 +2410,13 @@ class OwnlyApp(App):
         try:
             from jnius import autoclass  # type: ignore
             AudioManager = autoclass('android.media.AudioManager')
-            Build = autoclass('android.os.Build')
+            BuildVersion = autoclass('android.os.Build$VERSION')
             am = activity.getSystemService('audio')
 
             if self._audio_focus_listener is None:
                 self._audio_focus_listener = _get_audio_focus_listener_class()(self)
 
-            if Build.VERSION.SDK_INT >= 26:  # Android 8+
+            if BuildVersion.SDK_INT >= 26:  # Android 8+
                 AudioFocusRequestBuilder = autoclass('android.media.AudioFocusRequest$Builder')
                 AndroidAudioAttrsBuilder = autoclass('android.media.AudioAttributes$Builder')
                 AndroidAudioAttrs = autoclass('android.media.AudioAttributes')
@@ -2448,10 +2448,10 @@ class OwnlyApp(App):
         try:
             from jnius import autoclass  # type: ignore
             AudioManager = autoclass('android.media.AudioManager')
-            Build = autoclass('android.os.Build')
+            BuildVersion = autoclass('android.os.Build$VERSION')
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             am = PythonActivity.mActivity.getSystemService('audio')
-            if Build.VERSION.SDK_INT >= 26 and self._audio_focus_req is not None:
+            if BuildVersion.SDK_INT >= 26 and self._audio_focus_req is not None:
                 am.abandonAudioFocusRequest(self._audio_focus_req)
             elif self._audio_focus_listener is not None:
                 am.abandonAudioFocus(self._audio_focus_listener)
