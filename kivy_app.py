@@ -2658,8 +2658,8 @@ class OwnlyApp(App):
                             except Exception as _e:
                                 self.log(f'watcher: state poll err: {_e}')
                         _handler.post(ExoRunnableClass(_poll))
-                except Exception:
-                    pass
+                except Exception as _poll_err:
+                    self.log(f'watcher: handler post ERR: {_poll_err}')
             if not self._pending_auto_next:
                 continue
             self._pending_auto_next = False
