@@ -2403,7 +2403,7 @@ class OwnlyApp(App):
         except Exception:
             pass
 
-    def _request_audio_focus(self, activity):
+    def _request_audio_focus(self, activity=None):
         """Request AUDIOFOCUS_GAIN so Android doesn't mute our audio in background."""
         if platform != 'android':
             return
@@ -2411,6 +2411,9 @@ class OwnlyApp(App):
             from jnius import autoclass  # type: ignore
             AudioManager = autoclass('android.media.AudioManager')
             BuildVersion = autoclass('android.os.Build$VERSION')
+            if activity is None:
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
             am = activity.getSystemService('audio')
 
             if self._audio_focus_listener is None:
@@ -3293,6 +3296,9 @@ class OwnlyApp(App):
     def on_pause(self):
         """Android back/home button: keep running so audio continues in background."""
         self.log('lifecycle: app → hintergrund')
+        if self._exo_playing:
+            # SDL2 may abandon audio focus in its onPause — re-claim it immediately.
+            self._request_audio_focus()
         return True
 
     def on_resume(self):
