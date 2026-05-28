@@ -2269,7 +2269,6 @@ class OwnlyApp(App):
     def _stop_audio_service(self):
         """Stop the Java foreground service."""
         self._release_playback_wake_lock()
-        self._abandon_audio_focus()
         if platform != 'android':
             return
         try:
@@ -2633,9 +2632,6 @@ class OwnlyApp(App):
 
                         self._sound = player
                         self._exo_playing = True
-
-                        # Request audio focus so Android doesn't mute us in background.
-                        self._request_audio_focus(activity)
 
                         # Back to Kivy thread for UI updates.
                         Clock.schedule_once(lambda _: self._on_exo_started(label))
@@ -3311,9 +3307,6 @@ class OwnlyApp(App):
     def on_pause(self):
         """Android back/home button: keep running so audio continues in background."""
         self.log('lifecycle: app → hintergrund')
-        if self._exo_playing:
-            # SDL2 may abandon audio focus in its onPause — re-claim it immediately.
-            self._request_audio_focus()
         return True
 
     def on_resume(self):
