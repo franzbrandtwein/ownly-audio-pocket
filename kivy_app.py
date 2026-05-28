@@ -324,11 +324,12 @@ def _get_exo_listener_class():
             __javainterfaces__ = ['androidx/media3/common/Player$Listener']
             __javacontext__ = 'app'
 
-            def __init__(self, on_ended, on_error, on_state=None):
+            def __init__(self, on_ended, on_error, on_state=None, on_resume=None):
                 super().__init__()
                 self._on_ended = on_ended
                 self._on_error = on_error
                 self._on_state = on_state
+                self._on_resume = on_resume or (lambda: None)
 
             _STATE_NAMES = {1: 'IDLE', 2: 'BUFFERING', 3: 'READY', 4: 'ENDED'}
 
@@ -353,6 +354,9 @@ def _get_exo_listener_class():
                 r = _reasons.get(reason, str(reason))
                 if self._on_state:
                     self._on_state(f'exo: playWhenReady={play_when_ready} reason={r}')
+                # If Android paused us via audio focus loss, fight back immediately.
+                if not play_when_ready and reason in (2, 3):
+                    self._on_resume()
 
             @java_method('(Landroidx/media3/common/PlaybackException;)V')
             def onPlayerError(self, error):
@@ -2586,7 +2590,8 @@ class OwnlyApp(App):
                             self.log(f'exo: BecomingNoisy warn: {_e}')
                         self.log('exo: player gebaut')
 
-                        # handleAudioFocus=False: keep playing when other apps take audio focus.
+                        # handleAudioFocus=True: ExoPlayer manages focus; listener calls play()
+                        # immediately if paused by focus loss.
                         try:
                             AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
                             try:
@@ -2599,16 +2604,25 @@ class OwnlyApp(App):
                             except Exception:
                                 # Builder inner class unavailable — fall back to DEFAULT.
                                 audio_attrs = AudioAttributes.DEFAULT
-                            player.setAudioAttributes(audio_attrs, False)
-                            self.log('exo: AudioAttributes gesetzt (handleAudioFocus=False)')
+                            player.setAudioAttributes(audio_attrs, True)
+                            self.log('exo: AudioAttributes gesetzt (handleAudioFocus=True)')
                         except Exception as _e:
                             self.log(f'exo: AudioAttributes fehlgeschlagen: {_e}')
+
+                        def _force_resume():
+                            try:
+                                if self._exo_playing and self._sound is not None:
+                                    self._sound.play()
+                                    self.log('exo: focus-loss → play() erzwungen')
+                            except Exception as _fe:
+                                self.log(f'exo: focus-loss play err: {_fe}')
 
                         ExoListenerClass = _get_exo_listener_class()
                         self._mp_listener = ExoListenerClass(
                             lambda: setattr(self, '_pending_auto_next', True),
                             lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
                             lambda s: self.log(s),
+                            _force_resume,
                         )
                         player.addListener(self._mp_listener)
 
@@ -2723,6 +2737,7 @@ class OwnlyApp(App):
         self._root.ids.play_btn.text = '>'
 
     def _on_track_ended(self, *_):
+        self.log('on_track_ended: fired → _exo_playing=False')
         self._exo_playing = False
         Clock.schedule_once(lambda _: self._auto_next())
 
