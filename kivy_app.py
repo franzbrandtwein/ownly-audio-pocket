@@ -3315,6 +3315,12 @@ class OwnlyApp(App):
     def on_stop(self):
         self.log('lifecycle: on_stop (app wird beendet)')
         self._release_wifi_lock()
+        # If music is playing, do NOT release ExoPlayer or stop the proxy —
+        # on_stop() can be called by Android after on_pause() even when the app
+        # is just going to background, not being destroyed.
+        if self._exo_playing:
+            self.log('lifecycle: on_stop ignoriert (Musik läuft)')
+            return
         self._stop_audio_service()
         if self._proxy:
             self._proxy.stop()
