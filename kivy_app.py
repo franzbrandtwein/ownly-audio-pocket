@@ -366,6 +366,45 @@ def _get_exo_listener_class():
     return _ExoListenerClass
 
 
+# AudioFocusChangeListener — keeps playing when other apps request audio focus.
+_AudioFocusListenerClass = None
+
+def _get_audio_focus_listener_class():
+    global _AudioFocusListenerClass
+    if _AudioFocusListenerClass is None:
+        from jnius import PythonJavaClass, java_method  # type: ignore
+
+        class _AudioFocusListener(PythonJavaClass):
+            __javainterfaces__ = ['android/media/AudioManager$OnAudioFocusChangeListener']
+            __javacontext__ = 'app'
+
+            def __init__(self, app):
+                super().__init__()
+                self._app = app
+
+            @java_method('(I)V')
+            def onAudioFocusChange(self, focus_change):
+                # -1=LOSS, -2=LOSS_TRANSIENT, -3=LOSS_TRANSIENT_CAN_DUCK, 1=GAIN
+                names = {-1: 'LOSS', -2: 'LOSS_TRANSIENT', -3: 'CAN_DUCK', 1: 'GAIN'}
+                self._app.log(f'audio_focus: {names.get(focus_change, focus_change)}')
+                if focus_change < 0 and self._app._exo_playing:
+                    # System tried to take our focus — force resume immediately.
+                    _p = self._app._sound
+                    _h = self._app._exo_handler
+                    if _p is not None and _h is not None:
+                        ExoRunnableClass = _get_exo_runnable_class()
+                        def _resume():
+                            try:
+                                _p.play()
+                                self._app.log('audio_focus: play() erzwungen')
+                            except Exception as _e:
+                                self._app.log(f'audio_focus: play() err: {_e}')
+                        _h.post(ExoRunnableClass(_resume))
+
+        _AudioFocusListenerClass = _AudioFocusListener
+    return _AudioFocusListenerClass
+
+
 class EmbeddedServer:
     """
     Minimal SOAP + audio HTTP server + UDP broadcast.
@@ -1588,6 +1627,8 @@ class OwnlyApp(App):
         self._dl_wake_lock       = None   # PARTIAL_WAKE_LOCK held during background downloads
         self._playback_wake_lock = None   # PARTIAL_WAKE_LOCK held while a track is playing
         self._exo_handler        = None   # Handler on ExoPlayerThread — ExoPlayer runs here
+        self._audio_focus_req    = None   # AudioFocusRequest (Android 8+) — held during playback
+        self._audio_focus_listener = None # OnAudioFocusChangeListener instance
         self._proxy          = None   # _LocalProxy instance for current stream
         self._wifi_lock      = None   # WiFi lock — keeps radio on during streaming
         self._cached_ids          = set()
@@ -2224,6 +2265,7 @@ class OwnlyApp(App):
     def _stop_audio_service(self):
         """Stop the Java foreground service."""
         self._release_playback_wake_lock()
+        self._abandon_audio_focus()
         if platform != 'android':
             return
         try:
@@ -2360,6 +2402,63 @@ class OwnlyApp(App):
                 self.log('wakelock: playback freigegeben')
         except Exception:
             pass
+
+    def _request_audio_focus(self, activity):
+        """Request AUDIOFOCUS_GAIN so Android doesn't mute our audio in background."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass  # type: ignore
+            AudioManager = autoclass('android.media.AudioManager')
+            Build = autoclass('android.os.Build')
+            am = activity.getSystemService('audio')
+
+            if self._audio_focus_listener is None:
+                self._audio_focus_listener = _get_audio_focus_listener_class()(self)
+
+            if Build.VERSION.SDK_INT >= 26:  # Android 8+
+                AudioFocusRequestBuilder = autoclass('android.media.AudioFocusRequest$Builder')
+                AndroidAudioAttrsBuilder = autoclass('android.media.AudioAttributes$Builder')
+                AndroidAudioAttrs = autoclass('android.media.AudioAttributes')
+                attrs = AndroidAudioAttrsBuilder() \
+                    .setUsage(AndroidAudioAttrs.USAGE_MEDIA) \
+                    .setContentType(AndroidAudioAttrs.CONTENT_TYPE_MUSIC) \
+                    .build()
+                req = AudioFocusRequestBuilder(AudioManager.AUDIOFOCUS_GAIN) \
+                    .setAudioAttributes(attrs) \
+                    .setWillPauseWhenDucked(False) \
+                    .setOnAudioFocusChangeListener(self._audio_focus_listener) \
+                    .build()
+                self._audio_focus_req = req
+                result = am.requestAudioFocus(req)
+            else:
+                self._audio_focus_req = None
+                result = am.requestAudioFocus(
+                    self._audio_focus_listener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN)
+            self.log(f'audio_focus: angefordert result={result}')
+        except Exception as _e:
+            self.log(f'audio_focus: request ERR: {_e}')
+
+    def _abandon_audio_focus(self):
+        """Release audio focus when playback stops."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass  # type: ignore
+            AudioManager = autoclass('android.media.AudioManager')
+            Build = autoclass('android.os.Build')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            am = PythonActivity.mActivity.getSystemService('audio')
+            if Build.VERSION.SDK_INT >= 26 and self._audio_focus_req is not None:
+                am.abandonAudioFocusRequest(self._audio_focus_req)
+            elif self._audio_focus_listener is not None:
+                am.abandonAudioFocus(self._audio_focus_listener)
+            self._audio_focus_req = None
+            self.log('audio_focus: freigegeben')
+        except Exception as _e:
+            self.log(f'audio_focus: abandon ERR: {_e}')
 
     def _release_dl_wake_lock(self):
         try:
@@ -2517,6 +2616,9 @@ class OwnlyApp(App):
 
                         self._sound = player
                         self._exo_playing = True
+
+                        # Request audio focus so Android doesn't mute us in background.
+                        self._request_audio_focus(activity)
 
                         # Back to Kivy thread for UI updates.
                         Clock.schedule_once(lambda _: self._on_exo_started(label))
