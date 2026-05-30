@@ -35,15 +35,20 @@ android.debug = False
 # Allow cleartext HTTP to 127.0.0.1 so ExoPlayer can connect to the local proxy
 android.res_xml = res/xml/network_security_config.xml
 android.extra_manifest_application_arguments = manifest_app_attrs.txt
-# Injects the ForegroundAudioService <service> element inside <application>.
-# This is the OFFICIAL p4a hook — the manifest template renders
-# `{{ args.extra_manifest_xml }}` at exactly the right spot, so this
-# is much more reliable than the manual after_apk_build patch.
-android.extra_manifest_xml = extra_manifest.xml
 
-# Java foreground service source files + p4a hook safety-net for the
-# manifest. The hook is now belt-and-suspenders only — the primary
-# manifest injection happens via android.extra_manifest_xml above.
+# ForegroundAudioService manifest declaration:
+#
+# We tried `android.extra_manifest_xml` but it injects content at
+# <manifest>-level (next to <application>), which is invalid for
+# <service> tags — they MUST live inside <application>. The aapt2
+# resource linker rejects it with:
+#   "unexpected element <service> found in <manifest>"
+#
+# Instead we rely on p4a_hook.py which runs in `before_apk_build`
+# (i.e. BEFORE gradle assembles the APK) and patches the <service>
+# element directly into <application>. The hook is idempotent and
+# searches the build tree recursively, so all manifest copies that
+# gradle's manifest merger touches get the same service block.
 android.add_src = src
 p4a.hook = p4a_hook.py
 

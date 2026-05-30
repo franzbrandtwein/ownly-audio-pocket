@@ -8,7 +8,6 @@ on:
       - 'kivy_app.py'
       - 'buildozer.spec'
       - 'p4a_hook.py'
-      - 'extra_manifest.xml'
       - 'src/**'
       - 'res/**'
       - 'manifest_app_attrs.txt'
