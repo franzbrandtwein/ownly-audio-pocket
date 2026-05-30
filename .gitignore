@@ -3,3 +3,9 @@ music/
 nohup.out
 __pycache__/
 *.pyc
+.env
+.env.*
+*.env
+credentials.json
+*.key
+.credentials

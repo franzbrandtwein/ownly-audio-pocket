@@ -1002,7 +1002,7 @@ KV = """
 <SettingsPopup>:
     title: 'Einstellungen'
     size_hint: .92, None
-    height: dp(260)
+    height: dp(420)
     auto_dismiss: True
     BoxLayout:
         orientation: 'vertical'
@@ -1026,6 +1026,52 @@ KV = """
                 text: 'EIN' if app.auto_cache_on_play else 'AUS'
                 background_color: (.18, .55, .18, 1) if app.auto_cache_on_play else (.45, .45, .45, 1)
                 on_release: app.toggle_auto_cache()
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(10)
+            Label:
+                text: 'Bei Anruf/anderer Media-App pausieren'
+                font_size: dp(13)
+                color: (.9, .9, .9, 1)
+                halign: 'left'
+                valign: 'middle'
+                text_size: self.size
+            Button:
+                size_hint_x: None
+                width: dp(64)
+                font_size: dp(13)
+                text: 'EIN' if app.respect_audio_focus else 'AUS'
+                background_color: (.18, .55, .18, 1) if app.respect_audio_focus else (.45, .45, .45, 1)
+                on_release: app.toggle_respect_audio_focus()
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(10)
+            Label:
+                text: 'Akku-Optimierung'
+                font_size: dp(13)
+                color: (.9, .9, .9, 1)
+                halign: 'left'
+                valign: 'middle'
+                text_size: self.size
+            Button:
+                id: battery_btn
+                size_hint_x: None
+                width: dp(110)
+                font_size: dp(12)
+                text: 'Erteilen'
+                background_color: (.55, .18, .18, 1)
+                on_release: app.request_battery_optimization_exemption()
+        Label:
+            id: battery_status
+            size_hint_y: None
+            height: dp(18)
+            text: 'Status: unbekannt'
+            font_size: dp(11)
+            halign: 'left'
+            text_size: self.size
+            color: (.7, .7, .7, 1)
         Label:
             size_hint_y: None
             height: dp(18)
@@ -1573,6 +1619,58 @@ class QRScanPopup(Popup):
 
 
 # ---------------------------------------------------------------------------
+# Service player wrapper
+# ---------------------------------------------------------------------------
+class _ServicePlayer:
+    """Mimics the subset of the ExoPlayer API used elsewhere in this file,
+    but forwards control to the ForegroundAudioService running in the
+    `:audio` process.  State queries return values cached from the most
+    recent BROADCAST_STATE / BROADCAST_POSITION updates."""
+
+    def __init__(self, app):
+        self._app = app
+        self._pos = 0       # ms
+        self._dur = 0       # ms (negative if unknown)
+        self._playing = False
+        self._pwr = True    # play-when-ready mirror
+
+    # ── Control (forwarded as intents to the service) ────────────────────────
+    def play(self):
+        self._pwr = True
+        self._app._send_audio_intent('RESUME')
+
+    def pause(self):
+        self._pwr = False
+        self._app._send_audio_intent('PAUSE')
+
+    def stop(self):
+        self._pwr = False
+        self._playing = False
+        self._app._send_audio_intent('STOP')
+
+    def release(self):
+        # Service owns the actual player; releasing here is a no-op.
+        self._playing = False
+
+    def seekTo(self, pos_ms):
+        self._pos = int(pos_ms)
+        self._app._send_audio_intent('SEEK', pos=int(pos_ms))
+
+    # ── State (cached from broadcasts) ───────────────────────────────────────
+    def getCurrentPosition(self):
+        return self._pos
+
+    def getDuration(self):
+        return self._dur
+
+    def isPlaying(self):
+        return self._playing
+
+    def getPlayWhenReady(self):
+        return self._pwr
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
@@ -1580,6 +1678,7 @@ class OwnlyApp(App):
     title = 'Ownly Audio Pocket'
 
     auto_cache_on_play = BooleanProperty(False)
+    respect_audio_focus = BooleanProperty(False)
 
     def build(self):
         try:
@@ -1635,6 +1734,7 @@ class OwnlyApp(App):
         self._audio_focus_listener = None # OnAudioFocusChangeListener instance
         self._proxy          = None   # _LocalProxy instance for current stream
         self._wifi_lock      = None   # WiFi lock — keeps radio on during streaming
+        self._battery_opt_prompted = False  # show battery-opt dialog only once per session
         self._cached_ids          = set()
         self._offline_only        = False
         self._offline_tracks_dir  = ''   # empty = use default (user_data_dir/tracks)
@@ -1671,6 +1771,7 @@ class OwnlyApp(App):
 
         if platform == 'android':
             self._register_screen_receiver()
+            self._register_audio_broadcasts()
 
         Clock.schedule_once(self._load_servers, 0)
         Clock.schedule_once(self._load_server_music_dir, 0)
@@ -1696,9 +1797,11 @@ class OwnlyApp(App):
             with open(self._settings_file()) as f:
                 s = json.load(f)
             self.auto_cache_on_play    = bool(s.get('auto_cache_on_play', False))
+            self.respect_audio_focus   = bool(s.get('respect_audio_focus', False))
             self._offline_tracks_dir   = s.get('offline_tracks_dir', '')
         except Exception:
             self.auto_cache_on_play    = False
+            self.respect_audio_focus   = False
             self._offline_tracks_dir   = ''
 
     def _save_settings(self):
@@ -1706,6 +1809,7 @@ class OwnlyApp(App):
             with open(self._settings_file(), 'w') as f:
                 json.dump({
                     'auto_cache_on_play':  self.auto_cache_on_play,
+                    'respect_audio_focus': self.respect_audio_focus,
                     'offline_tracks_dir':  self._offline_tracks_dir,
                 }, f)
         except Exception:
@@ -1714,6 +1818,111 @@ class OwnlyApp(App):
     def toggle_auto_cache(self):
         self.auto_cache_on_play = not self.auto_cache_on_play
         self._save_settings()
+
+    def toggle_respect_audio_focus(self):
+        """Toggle whether ExoPlayer respects Android audio focus.
+
+        OFF (default): music keeps playing when another app comes to the
+            foreground — even other media apps. Standard Android focus rules
+            are ignored. This was the explicit product requirement.
+        ON: standard Android behavior — ExoPlayer pauses on focus loss
+            (incoming calls, other media apps).
+
+        The change takes effect for the next track that starts playing.
+        """
+        self.respect_audio_focus = not self.respect_audio_focus
+        self._save_settings()
+        self.log(f'user: respect_audio_focus → {"EIN" if self.respect_audio_focus else "AUS"}')
+
+    # ── Battery optimization exemption (Android only) ────────────────────────
+    # Background:
+    #   On aggressive OEMs (Oukitel, Xiaomi, Huawei, OnePlus) and Android 13+
+    #   the OS may freeze the whole process via the freezer cgroup once the
+    #   activity goes to background — even with a running foreground service.
+    #   When the process is frozen, ExoPlayer's Java threads stop running and
+    #   playback dies a few seconds after the buffer is exhausted.
+    #
+    #   The standard Android escape hatch is REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+    #   which the user can grant via a system dialog. Once granted, the OS
+    #   does not freeze the app while it's in the background.
+
+    def _is_ignoring_battery_optimizations(self):
+        """Return True if the app is currently exempt from battery optimization."""
+        if platform != 'android':
+            return True
+        try:
+            from jnius import autoclass  # type: ignore
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            pm = activity.getSystemService(activity.POWER_SERVICE)
+            pkg = activity.getPackageName()
+            return bool(pm.isIgnoringBatteryOptimizations(pkg))
+        except Exception as e:
+            self.log(f'battery_opt: check ERR: {e}')
+            return False
+
+    def request_battery_optimization_exemption(self):
+        """Open Android's system dialog asking the user to exempt the app.
+
+        Safe to call multiple times — if already exempt, this method is a no-op.
+        The dialog is mandatory user interaction; we cannot grant it silently.
+        """
+        if platform != 'android':
+            return
+        if self._is_ignoring_battery_optimizations():
+            self.log('battery_opt: bereits freigestellt')
+            if self._settings_popup:
+                self._settings_popup.ids.battery_status.text = 'Status: bereits freigestellt'
+                self._refresh_battery_button()
+            return
+        try:
+            from jnius import autoclass  # type: ignore
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent         = autoclass('android.content.Intent')
+            Settings       = autoclass('android.provider.Settings')
+            Uri            = autoclass('android.net.Uri')
+            activity = PythonActivity.mActivity
+            pkg = activity.getPackageName()
+            intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            intent.setData(Uri.parse(f'package:{pkg}'))
+            activity.startActivity(intent)
+            self.log('battery_opt: Dialog geöffnet')
+        except Exception as e:
+            # Some OEMs block the direct request intent. Fall back to the
+            # generic battery-optimization settings list where the user can
+            # tap the app manually.
+            self.log(f'battery_opt: direct request fehlgeschlagen: {e}')
+            try:
+                from jnius import autoclass  # type: ignore
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Intent   = autoclass('android.content.Intent')
+                Settings = autoclass('android.provider.Settings')
+                activity = PythonActivity.mActivity
+                intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                activity.startActivity(intent)
+                self.log('battery_opt: Fallback-Settings geöffnet')
+            except Exception as e2:
+                self.log(f'battery_opt: Fallback fehlgeschlagen: {e2}')
+
+    def _refresh_battery_button(self):
+        """Update the Settings-popup button label to reflect current status."""
+        if not self._settings_popup:
+            return
+        try:
+            btn = self._settings_popup.ids.battery_btn
+            lbl = self._settings_popup.ids.battery_status
+            if self._is_ignoring_battery_optimizations():
+                btn.text = 'Freigestellt'
+                btn.background_color = (.18, .55, .18, 1)
+                lbl.text = 'Status: freigestellt (Musik läuft im Hintergrund weiter)'
+                lbl.color = (.6, .9, .6, 1)
+            else:
+                btn.text = 'Erteilen'
+                btn.background_color = (.55, .18, .18, 1)
+                lbl.text = 'Status: nicht freigestellt — App wird im Hintergrund eingefroren'
+                lbl.color = (.95, .55, .25, 1)
+        except Exception:
+            pass
 
     def set_offline_tracks_dir(self, new_path):
         """Change the offline-tracks directory, moving all existing files there."""
@@ -2236,53 +2445,41 @@ class OwnlyApp(App):
             pass
 
     def _start_audio_service(self, track_label=''):
-        """Start the Java foreground service (main process) to keep app alive in background."""
+        """No-op shim retained for call-site compatibility.
+
+        With the new architecture the ForegroundAudioService is started
+        automatically as part of the PLAY intent dispatched by
+        _setup_exoplayer.  Sending an actionless Intent here would risk a
+        crash because the service-process expects to call startForeground()
+        only in response to a PLAY action.
+
+        We still acquire a playback wake lock in the activity process as
+        defence-in-depth, although the service holds its own wake lock too.
+        """
         if platform != 'android':
             return
-        try:
-            from jnius import autoclass
-            from android.runnable import run_on_ui_thread  # type: ignore
-            PythonActivity       = autoclass('org.kivy.android.PythonActivity')
-            Intent               = autoclass('android.content.Intent')
-            Build                = autoclass('android.os.Build$VERSION')
-            ForegroundAudioSvc   = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
-            intent = Intent(PythonActivity.mActivity, ForegroundAudioSvc)
-            intent.putExtra('track', track_label)
-
-            @run_on_ui_thread
-            def _do_start():
-                try:
-                    if Build.SDK_INT >= 26:
-                        PythonActivity.mActivity.startForegroundService(intent)
-                    else:
-                        PythonActivity.mActivity.startService(intent)
-                    self.log('audio_service: gestartet')
-                except Exception as e:
-                    self.log(f'audio_service: startForegroundService FEHLER: {e}')
-
-            _do_start()
-        except Exception as e:
-            self.log(f'audio_service: setup FEHLER: {e}')
-        # Hold CPU awake for playback — ExoPlayer's setWakeMode may not work via pyjnius
         self._acquire_playback_wake_lock()
 
     def _stop_audio_service(self):
-        """Stop the Java foreground service."""
+        """Stop the audio foreground service by sending a STOP intent."""
         self._release_playback_wake_lock()
         if platform != 'android':
             return
-        try:
-            from jnius import autoclass
-            PythonActivity       = autoclass('org.kivy.android.PythonActivity')
-            Intent               = autoclass('android.content.Intent')
-            ForegroundAudioSvc   = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
-            PythonActivity.mActivity.stopService(
-                Intent(PythonActivity.mActivity, ForegroundAudioSvc))
-        except Exception:
-            pass
+        self._send_audio_intent('STOP')
 
     def play_idx(self, server_idx):
         """Start playing the track identified by server-side idx."""
+        # First play of this session on Android → prompt user to exempt the
+        # app from battery optimization. This is the only reliable way to keep
+        # the process unfrozen in the background on aggressive OEMs
+        # (Oukitel, Xiaomi, Huawei, ...). The Android dialog only appears if
+        # the app is NOT yet exempt; otherwise this call is a silent no-op.
+        if platform == 'android' and not self._battery_opt_prompted:
+            self._battery_opt_prompted = True
+            if not self._is_ignoring_battery_optimizations():
+                self.log('battery_opt: nicht freigestellt — Dialog wird angefragt')
+                self.request_battery_optimization_exemption()
+
         track = next((t for t in self._all_tracks if t['idx'] == server_idx), None)
         self.log(f'user: play_idx {server_idx} ({track["title"][:25] if track else "?"})')
         self._active_srv_idx = server_idx
@@ -2298,10 +2495,10 @@ class OwnlyApp(App):
 
         if self._sound:
             if platform == 'android':
-                # ExoPlayer must only be released on its own Looper thread.
-                # Stash for release inside _setup_exoplayer (via Clock.schedule_once).
-                self._old_sound = self._sound
-                self._sound = None
+                # Service owns the actual ExoPlayer instance — the next PLAY
+                # intent will replace its current MediaItem. We only stop
+                # the local progress clock here; no release/cleanup needed
+                # on the wrapper itself.
                 self._stop_progress_clock()
             else:
                 try:
@@ -2505,146 +2702,199 @@ class OwnlyApp(App):
         finally:
             self._release_dl_wake_lock()
 
-    def _setup_exoplayer(self, url, label):
-        """Builds ExoPlayer on a dedicated HandlerThread, independent of SDL2/Kivy main thread.
+    # ── Audio service IPC ────────────────────────────────────────────────────
+    # The :audio process owns the ExoPlayer instance.  We talk to it via
+    # Intents (action commands) and listen for state via BroadcastReceiver.
 
-        SDL2 may block the Android main Looper when the activity is paused.
-        Running ExoPlayer on its own HandlerThread ensures callbacks (onIsPlayingChanged etc.)
-        always fire and ExoPlayer keeps playing regardless of Kivy/SDL2 state.
+    _SVC_ACTION_PREFIX = 'de.ownly.ownlyaudiopocket.'
+
+    def _send_audio_intent(self, action_suffix, **extras):
+        """Dispatch an action Intent to the ForegroundAudioService."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass  # type: ignore
+            PythonActivity     = autoclass('org.kivy.android.PythonActivity')
+            Intent             = autoclass('android.content.Intent')
+            ForegroundAudioSvc = autoclass('de.ownly.ownlyaudiopocket.ForegroundAudioService')
+            BuildVersion       = autoclass('android.os.Build$VERSION')
+
+            intent = Intent(PythonActivity.mActivity, ForegroundAudioSvc)
+            intent.setAction(self._SVC_ACTION_PREFIX + action_suffix)
+            for k, v in extras.items():
+                if isinstance(v, bool):
+                    intent.putExtra(k, bool(v))
+                elif isinstance(v, int):
+                    intent.putExtra(k, int(v))
+                elif isinstance(v, str):
+                    intent.putExtra(k, v)
+                else:
+                    intent.putExtra(k, str(v))
+
+            # PLAY must use startForegroundService so the service is
+            # promoted to foreground within 5s.  Other actions can use
+            # plain startService since the service is already running.
+            if action_suffix == 'PLAY' and BuildVersion.SDK_INT >= 26:
+                result = PythonActivity.mActivity.startForegroundService(intent)
+            else:
+                result = PythonActivity.mActivity.startService(intent)
+
+            # Diagnostic: a null ComponentName means the service is NOT
+            # declared in the manifest (or the system refused to start it).
+            if result is None:
+                self.log(f'svc intent {action_suffix}: ComponentName=NULL — Service nicht im Manifest!')
+                try:
+                    self._root.ids.now_playing.text = (
+                        '[X] Service nicht im Manifest — p4a_hook prüfen')
+                except Exception:
+                    pass
+            else:
+                try:
+                    cname = result.flattenToShortString()
+                except Exception:
+                    cname = '?'
+                self.log(f'svc intent {action_suffix}: started {cname}')
+        except Exception as e:
+            self.log(f'svc intent {action_suffix} ERR: {e}')
+
+    def _register_audio_broadcasts(self):
+        """Receive STATE / POSITION / ENDED / ERROR / DEBUG broadcasts from
+        the service.
+
+        We bypass kivy's BroadcastReceiver.start() because in p4a v2024.01.21
+        it calls registerReceiver(receiver, filter, null, handler) without
+        the RECEIVER_NOT_EXPORTED flag.  On Android 14+ targeting API 34+
+        this is forbidden for non-system actions and the broadcasts get
+        dropped silently.  We re-implement registration with the explicit
+        Context.RECEIVER_NOT_EXPORTED flag.
+        """
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass  # type: ignore
+            from android.broadcast import BroadcastReceiver  # type: ignore
+
+            self._audio_receiver = BroadcastReceiver(
+                self._on_audio_broadcast,
+                actions=[
+                    self._SVC_ACTION_PREFIX + 'STATE',
+                    self._SVC_ACTION_PREFIX + 'POSITION',
+                    self._SVC_ACTION_PREFIX + 'ENDED',
+                    self._SVC_ACTION_PREFIX + 'ERROR',
+                    self._SVC_ACTION_PREFIX + 'DEBUG',
+                ],
+            )
+
+            # Register manually with the flag instead of calling .start()
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Context        = autoclass('android.content.Context')
+            BuildVersion   = autoclass('android.os.Build$VERSION')
+            HandlerCls     = autoclass('android.os.Handler')
+
+            self._audio_receiver.handlerthread.start()
+            handler = HandlerCls(self._audio_receiver.handlerthread.getLooper())
+            self._audio_receiver.handler = handler
+
+            ctx = PythonActivity.mActivity
+            if BuildVersion.SDK_INT >= 33:
+                ctx.registerReceiver(
+                    self._audio_receiver.receiver,
+                    self._audio_receiver.receiver_filter,
+                    None,
+                    handler,
+                    Context.RECEIVER_NOT_EXPORTED,
+                )
+                self.log('svc: audio broadcasts registriert (RECEIVER_NOT_EXPORTED)')
+            else:
+                ctx.registerReceiver(
+                    self._audio_receiver.receiver,
+                    self._audio_receiver.receiver_filter,
+                    None,
+                    handler,
+                )
+                self.log('svc: audio broadcasts registriert')
+        except Exception as e:
+            self.log(f'svc: broadcast register ERR: {e}')
+
+    def _on_audio_broadcast(self, context, intent):
+        """Called on a binder thread when the audio service broadcasts state."""
+        try:
+            action = intent.getAction() or ''
+            suffix = action.replace(self._SVC_ACTION_PREFIX, '')
+            wrapper = self._sound if isinstance(self._sound, _ServicePlayer) else None
+
+            if suffix == 'POSITION':
+                pos = int(intent.getLongExtra('pos', 0))
+                dur = int(intent.getLongExtra('dur', 0))
+                if wrapper is not None:
+                    wrapper._pos = pos
+                    wrapper._dur = dur
+
+            elif suffix == 'STATE':
+                # Possible extras: state (int) — ExoPlayer playback state,
+                #                  isPlaying (bool)
+                if intent.hasExtra('state'):
+                    state = int(intent.getIntExtra('state', 0))
+                    names = {1: 'IDLE', 2: 'BUFFERING', 3: 'READY', 4: 'ENDED'}
+                    self.log(f'svc state: {names.get(state, state)}')
+                if intent.hasExtra('isPlaying'):
+                    is_playing = bool(intent.getBooleanExtra('isPlaying', False))
+                    if wrapper is not None:
+                        wrapper._playing = is_playing
+                    self.log(f'svc: isPlaying={is_playing}')
+
+            elif suffix == 'ENDED':
+                self.log('svc: ENDED → auto_next')
+                self._pending_auto_next = True
+
+            elif suffix == 'ERROR':
+                msg = intent.getStringExtra('msg') or 'ExoPlayer Fehler'
+                self.log(f'svc ERROR: {msg}')
+                Clock.schedule_once(lambda _dt, m=msg: self._on_play_error(m))
+
+            elif suffix == 'DEBUG':
+                msg = intent.getStringExtra('msg') or '?'
+                self.log(f'svc DBG: {msg}')
+        except Exception as e:
+            self.log(f'svc: broadcast handler ERR: {e}')
+
+    def _setup_exoplayer(self, url, label):
+        """Dispatch a PLAY command to the ForegroundAudioService (`:audio` process).
+
+        The actual ExoPlayer instance lives inside the service so that
+        Oukitel / Android-15 freezing of the activity process can no longer
+        stop playback.  Communication is one-shot Intents in, broadcasts out
+        (see _send_audio_intent / _on_audio_broadcast).
         """
         self.log(f'setup_exo: {url[-50:]}')
         self._acquire_wifi_lock()
 
         if platform != 'android':
-            # Should not be reached on desktop (separate path in play_idx), but guard.
             return
 
-        from android.runnable import run_on_ui_thread  # type: ignore
+        # Reuse the same _ServicePlayer wrapper across tracks; only its
+        # cached state needs resetting.
+        if not isinstance(self._sound, _ServicePlayer):
+            self._sound = _ServicePlayer(self)
+        wrapper = self._sound
+        wrapper._pos = 0
+        wrapper._dur = 0
+        wrapper._playing = False
+        wrapper._pwr = True
 
-        @run_on_ui_thread
-        def _on_ui_thread():
-            try:
-                from jnius import autoclass  # type: ignore
+        # Forward the play command. The service builds/configures ExoPlayer
+        # itself; we only pass the URL/track/focus-flag.
+        media_url = f'file://{url}' if url.startswith('/') else url
+        self._send_audio_intent(
+            'PLAY',
+            url=media_url,
+            track=label,
+            handleFocus=bool(self.respect_audio_focus),
+        )
+        self._exo_playing = True
+        self.log(f'svc: PLAY dispatched (handleFocus={bool(self.respect_audio_focus)})')
 
-                # Create a dedicated HandlerThread for ExoPlayer once — survives between tracks.
-                if self._exo_handler is None:
-                    HandlerThread = autoclass('android.os.HandlerThread')
-                    Handler = autoclass('android.os.Handler')
-                    ht = HandlerThread('ExoPlayerThread')
-                    ht.start()
-                    self._exo_handler = Handler(ht.getLooper())
-                    self.log('exo: HandlerThread gestartet')
-
-                ht_looper = self._exo_handler.getLooper()
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                activity = PythonActivity.mActivity
-
-                DefaultHttpDataSourceFactory = autoclass(
-                    'androidx.media3.datasource.DefaultHttpDataSource$Factory')
-                DefaultDataSourceFactory = autoclass(
-                    'androidx.media3.datasource.DefaultDataSource$Factory')
-                ProgressiveMediaSourceFactory = autoclass(
-                    'androidx.media3.exoplayer.source.ProgressiveMediaSource$Factory')
-
-                # 30s HTTP timeout; wrap in DefaultDataSource so file:// also works.
-                http_dsf = DefaultHttpDataSourceFactory()
-                http_dsf.setConnectTimeoutMs(30000)
-                http_dsf.setReadTimeoutMs(30000)
-                dsf = DefaultDataSourceFactory(activity, http_dsf)
-                msf = ProgressiveMediaSourceFactory(dsf)
-
-                media_url = f'file://{url}' if url.startswith('/') else url
-                ExoRunnableClass = _get_exo_runnable_class()
-
-                def _build_and_play():
-                    """Runs on ExoPlayerThread — ALL ExoPlayer calls must happen here."""
-                    try:
-                        self.log('exo: ui_thread start')
-                        ExoPlayerBuilder = autoclass('androidx.media3.exoplayer.ExoPlayer$Builder')
-                        MediaItem = autoclass('androidx.media3.common.MediaItem')
-                        C = autoclass('androidx.media3.common.C')
-
-                        # Release old players on the ExoPlayer thread (correct looper).
-                        for old in (self._old_sound, self._sound):
-                            if old is not None:
-                                try:
-                                    old.release()
-                                except Exception:
-                                    pass
-                        self._old_sound = None
-                        self._sound = None
-
-                        player = ExoPlayerBuilder(activity) \
-                            .setLooper(ht_looper) \
-                            .setMediaSourceFactory(msf) \
-                            .build()
-
-                        # PARTIAL_WAKE_LOCK + WifiLock: keep CPU/WiFi alive with screen off.
-                        player.setWakeMode(C.WAKE_MODE_NETWORK)
-                        # Disable becoming-noisy pause: don't stop when audio routing changes.
-                        try:
-                            player.setHandleAudioBecomingNoisy(False)
-                            self.log('exo: BecomingNoisy deaktiviert')
-                        except Exception as _e:
-                            self.log(f'exo: BecomingNoisy warn: {_e}')
-                        self.log('exo: player gebaut')
-
-                        # handleAudioFocus=True: ExoPlayer manages focus; listener calls play()
-                        # immediately if paused by focus loss.
-                        try:
-                            AudioAttributes = autoclass('androidx.media3.common.AudioAttributes')
-                            try:
-                                AudioAttributesBuilder = autoclass(
-                                    'androidx.media3.common.AudioAttributes$Builder')
-                                audio_attrs = AudioAttributesBuilder() \
-                                    .setUsage(C.USAGE_MEDIA) \
-                                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC) \
-                                    .build()
-                            except Exception:
-                                # Builder inner class unavailable — fall back to DEFAULT.
-                                audio_attrs = AudioAttributes.DEFAULT
-                            player.setAudioAttributes(audio_attrs, True)
-                            self.log('exo: AudioAttributes gesetzt (handleAudioFocus=True)')
-                        except Exception as _e:
-                            self.log(f'exo: AudioAttributes fehlgeschlagen: {_e}')
-
-                        def _force_resume():
-                            try:
-                                if self._exo_playing and self._sound is not None:
-                                    self._sound.play()
-                                    self.log('exo: focus-loss → play() erzwungen')
-                            except Exception as _fe:
-                                self.log(f'exo: focus-loss play err: {_fe}')
-
-                        ExoListenerClass = _get_exo_listener_class()
-                        self._mp_listener = ExoListenerClass(
-                            lambda: setattr(self, '_pending_auto_next', True),
-                            lambda msg: Clock.schedule_once(lambda _dt: self._on_play_error(msg)),
-                            lambda s: self.log(s),
-                            _force_resume,
-                        )
-                        player.addListener(self._mp_listener)
-
-                        player.setMediaItem(MediaItem.fromUri(media_url))
-                        player.prepare()
-                        player.play()
-                        self.log('exo: prepare+play OK')
-
-                        self._sound = player
-                        self._exo_playing = True
-
-                        # Back to Kivy thread for UI updates.
-                        Clock.schedule_once(lambda _: self._on_exo_started(label))
-                    except Exception as e:
-                        self.log(f'exo: FEHLER in HandlerThread: {e}')
-                        Clock.schedule_once(lambda _dt: self._on_play_error(str(e)))
-
-                self._exo_handler.post(ExoRunnableClass(_build_and_play))
-            except Exception as e:
-                self.log(f'exo: FEHLER in ui_thread: {e}')
-                Clock.schedule_once(lambda _dt: self._on_play_error(str(e)))
-
-        _on_ui_thread()
+        Clock.schedule_once(lambda _: self._on_exo_started(label))
 
     def _on_exo_started(self, label):
         """Kivy-thread callback after ExoPlayer is set up on the UI thread."""
@@ -2752,30 +3002,25 @@ class OwnlyApp(App):
             if _heartbeat >= 150:   # every 30s
                 _heartbeat = 0
                 self.log('watcher: alive')
-                # Poll ExoPlayer state via its HandlerThread (thread-safe).
+                # State is now mirrored from service broadcasts onto the
+                # _ServicePlayer wrapper — read directly, no IPC needed.
                 try:
-                    _handler = self._exo_handler
-                    if _handler is not None and self._exo_playing:
-                        ExoRunnableClass = _get_exo_runnable_class()
-                        def _poll():
+                    _p = self._sound
+                    if _p is not None and self._exo_playing:
+                        _ip  = bool(_p.isPlaying())
+                        _pwr = bool(_p.getPlayWhenReady())
+                        self.log(f'watcher: poll exo_playing=True isPlaying={_ip} pwr={_pwr}')
+                        # Auto-resume if paused unexpectedly while we still
+                        # think we're playing — sends a RESUME intent to the
+                        # service.
+                        if not _ip and _pwr:
                             try:
-                                _p = self._sound
-                                _ep = self._exo_playing
-                                if _p is not None:
-                                    _ip = bool(_p.isPlaying())
-                                    _pwr = bool(_p.getPlayWhenReady())
-                                    self.log(f'watcher: poll exo_playing={_ep} isPlaying={_ip} pwr={_pwr}')
-                                    # Auto-resume if paused unexpectedly
-                                    if _ep and not _ip and _pwr:
-                                        _p.play()
-                                        self.log('watcher: auto-resume play()')
-                                else:
-                                    self.log(f'watcher: poll _sound=None exo_playing={_ep}')
+                                _p.play()
+                                self.log('watcher: auto-resume play()')
                             except Exception as _e:
-                                self.log(f'watcher: state poll err: {_e}')
-                        _handler.post(ExoRunnableClass(_poll))
+                                self.log(f'watcher: auto-resume err: {_e}')
                 except Exception as _poll_err:
-                    self.log(f'watcher: handler post ERR: {_poll_err}')
+                    self.log(f'watcher: state poll ERR: {_poll_err}')
             if not self._pending_auto_next:
                 continue
             self._pending_auto_next = False
@@ -2861,9 +3106,8 @@ class OwnlyApp(App):
         self.log(f'auto_next → {track["title"][:30]}')
         self._active_srv_idx = idx
 
-        # Stash old player for cleanup inside _setup_exoplayer (on UI thread)
-        self._old_sound = self._sound
-        self._sound = None
+        # Service owns the ExoPlayer — no stash/release needed; the next
+        # PLAY intent will replace the current media item in the service.
 
         # Stop old proxy
         if self._proxy:
@@ -3116,6 +3360,7 @@ class OwnlyApp(App):
             self._settings_popup = SettingsPopup()
         self._settings_popup.ids.offline_dir_input.text = self._offline_tracks_dir or self._cache_dir()
         self._settings_popup.ids.offline_dir_status.text = ''
+        self._refresh_battery_button()
         self._settings_popup.open()
 
     def open_dir_chooser(self, target_input):
@@ -3315,9 +3560,10 @@ class OwnlyApp(App):
     def on_stop(self):
         self.log('lifecycle: on_stop (app wird beendet)')
         self._release_wifi_lock()
-        # If music is playing, do NOT release ExoPlayer or stop the proxy —
-        # on_stop() can be called by Android after on_pause() even when the app
-        # is just going to background, not being destroyed.
+        # If music is playing, do NOT stop the service or proxy — on_stop()
+        # can be called by Android after on_pause() even when the app is
+        # only going to background, not being destroyed. The service runs
+        # in its own process and will keep playback alive.
         if self._exo_playing:
             self.log('lifecycle: on_stop ignoriert (Musik läuft)')
             return
@@ -3325,32 +3571,7 @@ class OwnlyApp(App):
         if self._proxy:
             self._proxy.stop()
             self._proxy = None
-        if self._sound and platform == 'android':
-            _player = self._sound
-            _handler = self._exo_handler
-            try:
-                if _handler is not None:
-                    ExoRunnableClass = _get_exo_runnable_class()
-                    def _release():
-                        try:
-                            _player.stop()
-                            _player.release()
-                        except Exception:
-                            pass
-                    _handler.post(ExoRunnableClass(_release))
-                else:
-                    from android.runnable import run_on_ui_thread  # type: ignore
-                    @run_on_ui_thread
-                    def _release_ui():
-                        try:
-                            _player.stop()
-                            _player.release()
-                        except Exception:
-                            pass
-                    _release_ui()
-            except Exception:
-                pass
-        elif self._sound:
+        if self._sound and platform != 'android':
             try:
                 self._sound.stop()
                 if hasattr(self._sound, 'release'):
